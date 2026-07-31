@@ -51,12 +51,26 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 # SwiftPM emits dependency resources (e.g. KeyboardShortcuts localisations) as
 # sibling .bundle directories; they must travel with the app.
+#
+# They go in Contents/Resources, which is the only placement a signed bundle
+# permits: anything at the top level of the .app leaves "unsealed contents
+# present in the bundle root" and the signature will not verify, symlinks
+# included.
+#
+# Note that SwiftPM's generated Bundle.module accessor cannot find them there.
+# It looks in Bundle.main.bundleURL — the .app directory itself — and otherwise
+# falls back to a path hardcoded into the build machine's directory. Any
+# dependency reading resources through that accessor will therefore work on this
+# machine and call fatalError everywhere else. See Sources/Whisperoid/
+# ShortcutRecorder.swift, which exists to avoid exactly that.
 shopt -s nullglob
 for bundle in "$BIN_DIR"/*.bundle; do
-	cp -R "$bundle" "$APP/Contents/Resources/"
+	name="$(basename "$bundle")"
+	rm -rf "$APP/Contents/Resources/$name"
+	cp -R "$bundle" "$APP/Contents/Resources/$name"
 	# Drop any signature carried over from a previous build; these are
 	# resource-only bundles and the app signature seals them.
-	rm -rf "$APP/Contents/Resources/$(basename "$bundle")/_CodeSignature"
+	rm -rf "$APP/Contents/Resources/$name/_CodeSignature"
 done
 shopt -u nullglob
 

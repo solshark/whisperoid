@@ -9,9 +9,15 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Shortcuts") {
-                KeyboardShortcuts.Recorder("Start and stop dictation:", name: .toggleDictation)
-                KeyboardShortcuts.Recorder("Discard recording:", name: .cancelDictation)
-                caption("Discard is only active while recording.")
+                LabeledContent("Start and stop dictation") {
+                    ShortcutRecorder(name: .toggleDictation)
+                        .frame(width: 160, height: 24)
+                }
+                LabeledContent("Discard recording") {
+                    ShortcutRecorder(name: .cancelDictation)
+                        .frame(width: 160, height: 24)
+                }
+                caption("Discard is only active while recording. Press Escape to abandon a capture, Delete to clear a shortcut.")
             }
 
             Section("Recording") {

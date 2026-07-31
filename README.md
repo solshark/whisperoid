@@ -51,6 +51,41 @@ Full large-v3 is roughly four times slower, produced identical English text, and
 misdetected Russian as Romanian badly enough to transcribe it *as* Romanian.
 Warm model load is about 5.6 s; resident memory is about 0.8 GB.
 
+## SwiftPM resource bundles in a signed app
+
+A dependency that reads resources through SwiftPM's generated `Bundle.module`
+accessor cannot be shipped in a signed `.app` without care, and the failure only
+appears on machines other than the one that built it.
+
+The generated accessor looks for its bundle in `Bundle.main.bundleURL`, which
+for an application is the `.app` directory itself, and otherwise falls back to a
+path hardcoded into the build machine's `.build` directory. Placing the bundle
+in `Contents/Resources` — the only placement a signed bundle permits — means the
+accessor never finds it and calls `fatalError`. On the build machine the
+hardcoded fallback exists, so everything appears to work.
+
+Putting the bundle at the top level of the `.app` satisfies the accessor but
+leaves the signature invalid with "unsealed contents present in the bundle
+root". Symlinks fail identically. There is no placement that satisfies both.
+
+`KeyboardShortcuts` used that accessor in exactly one place, for the localised
+strings in its recorder view, which crashed the settings window on any other
+computer. `Sources/Whisperoid/ShortcutRecorder.swift` replaces that view;
+registration and lookup do not touch the accessor and are used unchanged.
+
+`swift-transformers` also reads a fallback tokenizer configuration this way. It
+is unreachable through WhisperKit's loading path and has never been hit, but it
+would fail the same way if it ever were.
+
+To verify a change of this kind, hide the build directory's copy so the machine
+behaves like a fresh one:
+
+```sh
+B=.build/arm64-apple-macosx/release/KeyboardShortcuts_KeyboardShortcuts.bundle
+mv "$B" "$B.hidden"
+open build/Whisperoid.app --env WHISPEROID_SHOW_SETTINGS=1
+```
+
 ## Known upstream issue
 
 `DecodingOptions.promptTokens` returns empty output on this model variant in
