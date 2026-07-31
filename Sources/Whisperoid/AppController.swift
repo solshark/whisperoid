@@ -4,7 +4,14 @@ import KeyboardShortcuts
 import Observation
 import WhisperoidCore
 
-/// Owns the dictation state machine and wires the hotkeys to it.
+struct Transcription: Identifiable, Sendable {
+    let id = UUID()
+    let text: String
+    let language: String
+    let duration: TimeInterval
+}
+
+/// Owns the dictation state machine and wires the hotkeys and overlay to it.
 @MainActor
 @Observable
 final class AppController {
@@ -20,16 +27,22 @@ final class AppController {
     /// Hard ceiling so a forgotten toggle cannot record indefinitely.
     static let maximumRecordingSeconds: Double = 300
 
+    /// How many past transcriptions stay available in the menu. The clipboard
+    /// is clobbered by every dictation, so this is the safety net.
+    static let historyLimit = 10
+
+    private static let waveformInterval: TimeInterval = 1.0 / 30.0
+    private static let successDismissDelay: Double = 3.0
+    private static let failureDismissDelay: Double = 4.5
+
     private(set) var state: State = .loading
-    private(set) var lastText = ""
-    private(set) var lastLanguage = ""
-    private(set) var lastDuration: TimeInterval = 0
     private(set) var recordedSeconds: Double = 0
-    private(set) var inputLevel: Float = 0
+    private(set) var history: [Transcription] = []
 
     private let recorder = AudioRecorder()
     private let transcriber = Transcriber()
     private let injector: any TextInjector = ClipboardInjector()
+    private let overlay = OverlayController()
     private var tickTimer: Timer?
 
     init() {
@@ -47,13 +60,21 @@ final class AppController {
     // MARK: - Model
 
     private func loadModel() async {
+        let started = Date()
         do {
             let directory = try Paths.ensureSupportDirectory()
+            log("loading \(Transcriber.modelVariant) from \(directory.path)")
             try await transcriber.load(storageDirectory: directory)
+            log(String(format: "model ready in %.2f s", Date().timeIntervalSince(started)))
             state = .idle
         } catch {
+            log("model load failed: \(error)")
             state = .failed("Model load failed: \(error.localizedDescription)")
         }
+    }
+
+    private func log(_ message: String) {
+        FileHandle.standardError.write(Data("whisperoid: \(message)\n".utf8))
     }
 
     // MARK: - Dictation
@@ -72,18 +93,22 @@ final class AppController {
     private func startRecording() {
         Task {
             guard await AudioRecorder.requestMicrophoneAccess() else {
-                state = .failed("Microphone access denied. Enable it in System Settings > Privacy & Security > Microphone.")
+                fail("Microphone access denied. Enable it in System Settings > Privacy & Security > Microphone.")
                 return
             }
             do {
                 try recorder.start()
                 recordedSeconds = 0
-                inputLevel = 0
                 state = .recording
+
+                overlay.model.levels = []
+                overlay.model.elapsed = 0
+                overlay.present(.recording)
+
                 KeyboardShortcuts.enable(.cancelDictation)
                 startTicking()
             } catch {
-                state = .failed(error.localizedDescription)
+                fail(error.localizedDescription)
             }
         }
     }
@@ -92,6 +117,7 @@ final class AppController {
         guard state == .recording else { return }
         recorder.cancel()
         endRecordingSession()
+        overlay.hideImmediately()
         state = .idle
     }
 
@@ -101,51 +127,91 @@ final class AppController {
         let samples = recorder.stop()
         endRecordingSession()
         state = .transcribing
+        overlay.update(.transcribing)
 
         Task {
             do {
                 let output = try await transcriber.transcribe(samples: samples)
                 guard !output.text.isEmpty else {
-                    state = .failed("Nothing was transcribed.")
+                    fail("Nothing was transcribed.")
                     return
                 }
+
                 try injector.inject(output.text)
-                lastText = output.text
-                lastLanguage = output.language
-                lastDuration = output.duration
+                record(output)
+
+                overlay.model.text = output.text
+                overlay.model.language = output.language
+                overlay.model.duration = output.duration
+                overlay.update(.done)
+                overlay.dismiss(after: Self.successDismissDelay)
+
                 state = .idle
             } catch {
-                state = .failed(error.localizedDescription)
+                fail(error.localizedDescription)
             }
         }
     }
 
+    private func record(_ output: Transcriber.Output) {
+        history.insert(
+            Transcription(
+                text: output.text,
+                language: output.language,
+                duration: output.duration
+            ),
+            at: 0
+        )
+        if history.count > Self.historyLimit {
+            history.removeLast(history.count - Self.historyLimit)
+        }
+    }
+
+    private func fail(_ message: String) {
+        state = .failed(message)
+        overlay.model.message = message
+        overlay.update(.failed)
+        overlay.dismiss(after: Self.failureDismissDelay)
+    }
+
+    func copy(_ transcription: Transcription) {
+        try? injector.inject(transcription.text)
+    }
+
     func copyLastAgain() {
-        guard !lastText.isEmpty else { return }
-        try? injector.inject(lastText)
+        guard let latest = history.first else { return }
+        copy(latest)
+    }
+
+    func clearHistory() {
+        history.removeAll()
     }
 
     private func endRecordingSession() {
         stopTicking()
         KeyboardShortcuts.disable(.cancelDictation)
         recordedSeconds = 0
-        inputLevel = 0
     }
 
     // MARK: - Recording tick
 
     private func startTicking() {
         stopTicking()
-        tickTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+
+        let timer = Timer(timeInterval: Self.waveformInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.state == .recording else { return }
                 self.recordedSeconds = self.recorder.recordedSeconds
-                self.inputLevel = self.recorder.currentLevel
+                self.overlay.model.levels = self.recorder.recentLevels
+                self.overlay.model.elapsed = self.recordedSeconds
                 if self.recordedSeconds >= Self.maximumRecordingSeconds {
                     self.finishRecording()
                 }
             }
         }
+        // Common mode keeps the waveform animating while a menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        tickTimer = timer
     }
 
     private func stopTicking() {
@@ -170,9 +236,9 @@ final class AppController {
         case .loading:
             "Loading model…"
         case .idle:
-            lastText.isEmpty
-                ? "Ready"
-                : String(format: "Ready — last: %@, %.2f s", lastLanguage, lastDuration)
+            history.first.map {
+                String(format: "Ready — last: %@, %.2f s", $0.language, $0.duration)
+            } ?? "Ready"
         case .recording:
             String(format: "Recording %.1f s", recordedSeconds)
         case .transcribing:

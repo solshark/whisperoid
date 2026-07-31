@@ -18,7 +18,7 @@ struct WhisperoidApp: App {
 
 struct MenuContent: View {
 
-    @Bindable var controller: AppController
+    let controller: AppController
 
     var body: some View {
         Text(controller.statusText)
@@ -38,11 +38,23 @@ struct MenuContent: View {
 
         Text("Shortcut: \(controller.shortcutDescription)")
 
-        if !controller.lastText.isEmpty {
+        if !controller.history.isEmpty {
             Divider()
-            Text(preview(of: controller.lastText))
-            Button("Copy Again") {
+
+            Button("Copy Last Again") {
                 controller.copyLastAgain()
+            }
+
+            Menu("History") {
+                ForEach(controller.history) { item in
+                    Button(Self.preview(of: item.text)) {
+                        controller.copy(item)
+                    }
+                }
+                Divider()
+                Button("Clear History") {
+                    controller.clearHistory()
+                }
             }
         }
 
@@ -54,9 +66,10 @@ struct MenuContent: View {
         .keyboardShortcut("q")
     }
 
-    private func preview(of text: String) -> String {
-        let limit = 60
-        guard text.count > limit else { return text }
-        return String(text.prefix(limit)) + "…"
+    private static func preview(of text: String) -> String {
+        let limit = 50
+        let flattened = text.replacingOccurrences(of: "\n", with: " ")
+        guard flattened.count > limit else { return flattened }
+        return String(flattened.prefix(limit)) + "…"
     }
 }
