@@ -40,7 +40,10 @@ final class Preferences {
         defaults.register(defaults: [
             Key.playSounds: true,
             Key.autoStopOnSilence: true,
-            Key.silenceSeconds: 3.0,
+            // Measured gaps within continuous speech reach 1.9 s, so 3 s leaves
+            // little margin. Auto-stop is a safety net rather than the primary
+            // way to finish, so a longer wait costs nothing.
+            Key.silenceSeconds: 4.0,
         ])
         playSounds = defaults.bool(forKey: Key.playSounds)
         autoStopOnSilence = defaults.bool(forKey: Key.autoStopOnSilence)

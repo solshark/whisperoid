@@ -66,10 +66,12 @@ and adjacent ordinary words.
 
 ```
 Sources/
-  WhisperoidCore/     Audio capture, transcription, clipboard, paths
-  Whisperoid/         Menu bar app, hotkeys, overlay
-Resources/Info.plist  Bundle configuration
+  WhisperoidCore/     Audio capture, transcription, silence detection, clipboard
+  Whisperoid/         Menu bar app, hotkeys, overlay, preferences
+  vadcheck/           Development tool for tuning auto-stop against a recording
+Resources/            Bundle configuration and entitlements
 scripts/build-app.sh  Assembles and signs Whisperoid.app
+scripts/package.sh    Produces a distributable archive in dist/
 spike/                Standalone benchmark harness from model selection
 ```
 
@@ -119,7 +121,27 @@ Preferences (`⌘,` from the menu) cover both shortcuts, automatic stop on
 silence, sound cues and opening at login.
 
 Automatic stop only arms once speech has been heard, so a pause before the
-first word will not end the recording. It defaults to 3 s of silence.
+first word will not end the recording. It defaults to 4 s of silence.
+
+The silence threshold is derived from the loudest speech in the current
+recording, not fixed in dBFS. Absolute levels depend entirely on microphone
+gain: measured speech on this hardware peaks at -37 dBFS, so a fixed -42 dBFS
+threshold classified 92% of active speech as silence and cut recordings off
+mid-sentence. Silence is now anything 20 dB below the observed peak, bounded to
+-65...-35 dBFS.
+
+Use `vadcheck` to re-tune against a recording rather than by guesswork:
+
+```sh
+swift build -c release --product vadcheck
+./.build/release/vadcheck path/to/recording.wav 4.0 20
+```
+
+It replays the file through the real `SilenceDetector` and prints the level
+timeline, the derived threshold, the longest continuous silence, and where
+auto-stop would fire. Across two real recordings, a 15 dB drop left gaps of
+3.4-3.8 s within continuous speech; 20 dB reduced that to 1.9 s; beyond 25 dB
+the threshold falls under the room's noise floor and auto-stop never fires.
 
 Opening at login uses `SMAppService`, which records wherever the app currently
 lives. Move it to /Applications before enabling.

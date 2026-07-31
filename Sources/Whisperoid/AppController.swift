@@ -109,6 +109,7 @@ final class AppController {
                 silenceDetector = preferences.autoStopOnSilence
                     ? SilenceDetector(requiredSilence: preferences.silenceSeconds)
                     : nil
+                silenceDetector?.reset()
 
                 overlay.model.levels = []
                 overlay.model.elapsed = 0

@@ -64,12 +64,11 @@ struct MenuContent: View {
 
         Divider()
 
-        Button("Preferences…") {
-            // The app is an accessory with no Dock icon, so it must be brought
-            // forward explicitly or the settings window opens behind whatever
-            // the user is looking at.
-            NSApp.activate()
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        // SettingsLink is the supported way to open the Settings scene.
+        // NSApp.sendAction(Selector(("showSettingsWindow:"))) does not work
+        // reliably from a MenuBarExtra and silently does nothing.
+        SettingsLink {
+            Text("Preferences…")
         }
         .keyboardShortcut(",")
 

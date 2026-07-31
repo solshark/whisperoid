@@ -1,3 +1,4 @@
+import AppKit
 import KeyboardShortcuts
 import SwiftUI
 
@@ -82,6 +83,13 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
-        .onAppear { controller.refreshLaunchAtLogin() }
+        .onAppear {
+            controller.refreshLaunchAtLogin()
+            // The app is an accessory with no Dock icon, so the settings window
+            // opens behind the frontmost application unless it is raised here.
+            NSApp.activate()
+            NSApp.windows.first { $0.title == "Whisperoid Settings" || $0.isVisible }?
+                .makeKeyAndOrderFront(nil)
+        }
     }
 }

@@ -25,5 +25,11 @@ let package = Package(
                 .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
             ]
         ),
+        // Development tool: replays a recording through the real
+        // SilenceDetector to tune auto-stop against actual speech.
+        .executableTarget(
+            name: "vadcheck",
+            dependencies: ["WhisperoidCore"]
+        ),
     ]
 )
