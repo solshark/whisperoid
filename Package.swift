@@ -9,7 +9,6 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.18.0"),
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts.git", from: "3.0.0"),
     ],
     targets: [
         .target(
@@ -20,10 +19,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Whisperoid",
-            dependencies: [
-                "WhisperoidCore",
-                .product(name: "KeyboardShortcuts", package: "KeyboardShortcuts"),
-            ]
+            dependencies: ["WhisperoidCore"]
         ),
         // Development tool: replays a recording through the real
         // SilenceDetector to tune auto-stop against actual speech.

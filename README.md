@@ -19,9 +19,11 @@ clipboard; transcript history in the menu compensates for the latter.
 and is released when the app quits, so nothing Whisper-related outlives the
 application.
 
-**Carbon hotkeys, not a CGEventTap.** `RegisterEventHotKey` (via
-`KeyboardShortcuts`) needs no Input Monitoring permission. A CGEventTap would,
-and is also restricted under App Sandbox.
+**Carbon hotkeys, not a CGEventTap.** `RegisterEventHotKey` needs no Input
+Monitoring permission. A CGEventTap would, and is also restricted under App
+Sandbox. Registration, storage and the recorder UI are implemented in
+`Sources/Whisperoid/Hotkeys.swift` and `ShortcutRecorder.swift`; see below for
+why the `KeyboardShortcuts` package was removed.
 
 **Automatic language detection.** One hotkey, no per-language binding. The
 selected model detects English and Russian reliably and preserves Latin-script
@@ -51,6 +53,27 @@ Full large-v3 is roughly four times slower, produced identical English text, and
 misdetected Russian as Romanian badly enough to transcribe it *as* Romanian.
 Warm model load is about 5.6 s; resident memory is about 0.8 GB.
 
+## Why KeyboardShortcuts was removed
+
+The `KeyboardShortcuts` package caused two unrelated crashes that both appeared
+only away from the machine that built the app, and it was replaced with roughly
+250 lines covering the eight APIs actually used.
+
+**Its Carbon callback used `MainActor.assumeIsolated`.** Running on the main
+thread is not the same as running on the main actor's executor, and on macOS 26
+with Swift 6.3 that check reads an invalid executor reference and faults. Four
+crash reports show it, as `EXC_BAD_ACCESS` or `EXC_BREAKPOINT` depending on
+timing. Version 3.0.1 is the newest release and already contains an attempted
+fix for a Swift 6.3 release-build crash, so there was nothing to upgrade to.
+`Hotkeys.swift` hops onto the actor from the C callback instead of asserting it
+is already there.
+
+**Its recorder view read localised strings through `Bundle.module`.** See the
+next section; there is no way to ship that in a signed application.
+
+Shortcut storage keys changed with the replacement, so a customised shortcut
+reverts to the default once. The default is unchanged.
+
 ## SwiftPM resource bundles in a signed app
 
 A dependency that reads resources through SwiftPM's generated `Bundle.module`
@@ -68,10 +91,9 @@ Putting the bundle at the top level of the `.app` satisfies the accessor but
 leaves the signature invalid with "unsealed contents present in the bundle
 root". Symlinks fail identically. There is no placement that satisfies both.
 
-`KeyboardShortcuts` used that accessor in exactly one place, for the localised
-strings in its recorder view, which crashed the settings window on any other
-computer. `Sources/Whisperoid/ShortcutRecorder.swift` replaces that view;
-registration and lookup do not touch the accessor and are used unchanged.
+`KeyboardShortcuts` used that accessor for the localised strings in its
+recorder view, which crashed the settings window on any other computer. That
+package has since been removed entirely.
 
 `swift-transformers` also reads a fallback tokenizer configuration this way. It
 is unreachable through WhisperKit's loading path and has never been hit, but it
@@ -81,7 +103,7 @@ To verify a change of this kind, hide the build directory's copy so the machine
 behaves like a fresh one:
 
 ```sh
-B=.build/arm64-apple-macosx/release/KeyboardShortcuts_KeyboardShortcuts.bundle
+B=.build/arm64-apple-macosx/release/<Name>.bundle
 mv "$B" "$B.hidden"
 open build/Whisperoid.app --env WHISPEROID_SHOW_SETTINGS=1
 ```
@@ -144,13 +166,9 @@ automatically after 300 s; anything under 0.3 s is ignored.
 Dictionary" shortcut within text views. A Carbon hotkey takes precedence, so
 that lookup is shadowed while the app is running.
 
-Note that `KeyboardShortcuts` persists its initial value to `UserDefaults` on
-first launch, so changing the default in source has no effect afterwards. Clear
-the stored value to pick up a new one:
-
-```sh
-defaults delete com.solshark.whisperoid KeyboardShortcuts_toggleDictation
-```
+A recorded shortcut is stored under `hotkey.<name>` in `UserDefaults`; clearing
+one is recorded separately so that it is not mistaken for never having set one,
+which would otherwise resurrect the default on the next launch.
 
 Preferences (`⌘,` from the menu) cover both shortcuts, automatic stop on
 silence, sound cues and opening at login.

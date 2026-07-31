@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import KeyboardShortcuts
 import Observation
 import WhisperoidCore
 
@@ -68,18 +67,14 @@ final class AppController {
     }
 
     init() {
-        // These fire from a Carbon C callback. That callback runs on the main
-        // thread, but the main thread is not the main actor's executor as far
-        // as the concurrency runtime is concerned, so MainActor.assumeIsolated
-        // reads an executor reference that is not valid during launch and
-        // traps. Entering the actor properly is the only safe option.
-        KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [weak self] in
-            Task { @MainActor in self?.toggle() }
+        HotkeyCenter.shared.onKeyUp(for: .toggleDictation) { [weak self] in
+            self?.toggle()
         }
-        KeyboardShortcuts.onKeyUp(for: .cancelDictation) { [weak self] in
-            Task { @MainActor in self?.cancel() }
+        HotkeyCenter.shared.onKeyUp(for: .cancelDictation) { [weak self] in
+            self?.cancel()
         }
-        KeyboardShortcuts.disable(.cancelDictation)
+        HotkeyCenter.shared.setEnabled(false, for: .cancelDictation)
+        Log.info("hotkey: toggle=\(shortcutDescription)")
 
         // Connecting or removing an input device invalidates the format the tap
         // was installed with. Finish with whatever was captured rather than keep
@@ -216,7 +211,8 @@ final class AppController {
         await Diagnostics.report(
             storageDirectory: Paths.supportDirectory,
             status: statusText,
-            lastError: lastErrorText
+            lastError: lastErrorText,
+            shortcut: shortcutDescription
         )
     }
 
@@ -265,7 +261,7 @@ final class AppController {
 
                 if preferences.playSounds { Sounds.playStart() }
 
-                KeyboardShortcuts.enable(.cancelDictation)
+                HotkeyCenter.shared.setEnabled(true, for: .cancelDictation)
                 startTicking()
             } catch {
                 fail(error.localizedDescription)
@@ -360,7 +356,7 @@ final class AppController {
     private func endRecordingSession() {
         stopTicking()
         silenceDetector = nil
-        KeyboardShortcuts.disable(.cancelDictation)
+        HotkeyCenter.shared.setEnabled(false, for: .cancelDictation)
         recordedSeconds = 0
     }
 
@@ -449,7 +445,6 @@ final class AppController {
     }
 
     var shortcutDescription: String {
-        KeyboardShortcuts.getShortcut(for: .toggleDictation)
-            .map(\.description) ?? "unassigned"
+        HotkeyCenter.shared.shortcut(for: .toggleDictation)?.description ?? "unassigned"
     }
 }

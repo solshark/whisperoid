@@ -11,7 +11,8 @@ public enum Diagnostics {
     public static func report(
         storageDirectory: URL,
         status: String,
-        lastError: String?
+        lastError: String?,
+        shortcut: String = "?"
     ) async -> String {
         var lines: [String] = []
 
@@ -26,6 +27,7 @@ public enum Diagnostics {
         lines.append("version:  \(version) (\(build))")
         lines.append("bundle:   \(bundle.bundlePath)")
         lines.append("status:   \(status)")
+        lines.append("shortcut: \(shortcut)")
         lines.append("error:    \(lastError ?? "none")")
         lines.append("")
 
