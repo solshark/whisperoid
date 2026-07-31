@@ -35,11 +35,23 @@ final class AppController {
     private static let successDismissDelay: Double = 3.0
     private static let failureDismissDelay: Double = 4.5
 
+    /// How long a startup phase may go without changing before the status says
+    /// so. Core ML preparation legitimately takes minutes on a machine that has
+    /// not compiled this model before, so this reports rather than fails.
+    private static let stallWarningSeconds: TimeInterval = 45
+
     private(set) var state: State = .loading
     private(set) var recordedSeconds: Double = 0
     private(set) var history: [Transcription] = []
     private(set) var launchAtLoginEnabled = LaunchAtLogin.isEnabled
     private(set) var launchAtLoginMessage: String?
+
+    private(set) var loadPhase: Transcriber.Phase = .locating
+    private(set) var lastErrorText: String?
+    private var phaseChangedAt = Date()
+    private var loggedDownloadPercent = -1
+    private var downloadedBytes: Int64 = 0
+    private var watchdog: Timer?
 
     let preferences = Preferences()
 
@@ -73,23 +85,135 @@ final class AppController {
             }
         }
 
-        Task { await loadModel() }
+        Task {
+            await loadModel()
+            if ProcessInfo.processInfo.environment["WHISPEROID_DUMP_DIAGNOSTICS"] != nil {
+                logDiagnostics()
+            }
+        }
     }
 
     // MARK: - Model
 
     private func loadModel() async {
         let started = Date()
+        startWatchdog()
+        defer { stopWatchdog() }
+
         do {
             let directory = try Paths.ensureSupportDirectory()
-            Log.info("loading \(Transcriber.modelVariant) from \(directory.path)")
-            try await transcriber.load(storageDirectory: directory)
-            Log.info(String(format: "model ready in %.2f s", Date().timeIntervalSince(started)))
+            Log.info("startup: variant=\(Transcriber.modelVariant) storage=\(directory.path)")
+            Log.info("startup: model folder \(Transcriber.modelFolder(in: directory).path)")
+
+            try await transcriber.load(storageDirectory: directory) { [weak self] phase in
+                Task { @MainActor in self?.apply(phase) }
+            }
+
+            Log.info(String(format: "startup: ready in %.2f s", Date().timeIntervalSince(started)))
+            lastErrorText = nil
             state = .idle
         } catch {
-            Log.error("model load failed: \(error)")
+            let elapsed = Date().timeIntervalSince(started)
+            Log.error(String(format: "startup: failed after %.2f s during %@: %@",
+                             elapsed, loadPhase.description, String(describing: error)))
+            lastErrorText = "\(error)"
             state = .failed("Model load failed: \(error.localizedDescription)")
         }
+    }
+
+    private func apply(_ phase: Transcriber.Phase) {
+        loadPhase = phase
+        phaseChangedAt = Date()
+
+        switch phase {
+        case .downloading(let fraction, let completedFiles, let totalFiles):
+            // Progress fires constantly; log only on each whole percent so the
+            // unified log stays readable but a stall is still visible.
+            let percent = Int(fraction * 100)
+            if percent != loggedDownloadPercent {
+                loggedDownloadPercent = percent
+                Log.info("startup: downloading \(percent)% (file \(completedFiles) of \(totalFiles))")
+            }
+        default:
+            Log.info("startup: \(phase.description)")
+        }
+    }
+
+    /// Reports a phase that has not advanced. Startup can legitimately be slow,
+    /// so this never cancels anything; it only makes the wait explicable.
+    private func startWatchdog() {
+        stopWatchdog()
+        phaseChangedAt = Date()
+
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.state == .loading else { return }
+                self.measureDownloadedBytes()
+
+                let stalled = Date().timeIntervalSince(self.phaseChangedAt)
+                guard stalled >= Self.stallWarningSeconds else { return }
+                Log.info(String(format: "startup: no file-count change for %.0f s during %@ (%lld bytes on disk)",
+                                stalled, self.loadPhase.description, self.downloadedBytes))
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
+    }
+
+    private func stopWatchdog() {
+        watchdog?.invalidate()
+        watchdog = nil
+    }
+
+    /// File-count progress sits still while one large file transfers, so the
+    /// size on disk is what shows the download is actually moving.
+    private func measureDownloadedBytes() {
+        let folder = Transcriber.modelFolder(in: Paths.supportDirectory)
+        Task.detached(priority: .utility) {
+            let bytes = Diagnostics.directorySize(at: folder)
+            await MainActor.run { [weak self] in
+                guard let self, bytes != self.downloadedBytes else { return }
+                self.downloadedBytes = bytes
+                Log.info("startup: \(bytes) bytes on disk")
+            }
+        }
+    }
+
+    // MARK: - Support
+
+    func copyDiagnostics() {
+        Task {
+            let report = await diagnosticsReport()
+            try? injector.inject(report)
+            Log.info("diagnostics copied to clipboard")
+        }
+    }
+
+    /// Writes the report to the unified log instead of the clipboard, for a
+    /// machine where driving the menu bar is inconvenient.
+    func logDiagnostics() {
+        Task {
+            let report = await diagnosticsReport()
+            for line in report.split(separator: "\n", omittingEmptySubsequences: false) {
+                Log.info("diag| \(line)")
+            }
+        }
+    }
+
+    private func diagnosticsReport() async -> String {
+        await Diagnostics.report(
+            storageDirectory: Paths.supportDirectory,
+            status: statusText,
+            lastError: lastErrorText
+        )
+    }
+
+    func revealModelFolder() {
+        let folder = Transcriber.modelFolder(in: Paths.supportDirectory)
+        let target = FileManager.default.fileExists(atPath: folder.path)
+            ? folder
+            : Paths.supportDirectory
+        NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: target.path)
     }
 
     // MARK: - Dictation
@@ -289,7 +413,9 @@ final class AppController {
     var statusText: String {
         switch state {
         case .loading:
-            "Loading model…"
+            downloadedBytes > 0
+                ? "\(loadPhase.description) · \(ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file)) on disk"
+                : loadPhase.description
         case .idle:
             history.first.map {
                 String(format: "Ready — last: %@, %.2f s", $0.language, $0.duration)

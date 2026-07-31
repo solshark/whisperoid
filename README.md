@@ -181,6 +181,45 @@ error is easy to mistake for an empty result. Messages are emitted at `notice`
 rather than `info`, because info-level entries are held in memory only and are
 routinely dropped before `log show` can retrieve them.
 
+### First launch on a new machine
+
+The menu bar status reports each startup phase separately, because they stall
+for entirely different reasons:
+
+| Status | Meaning |
+| --- | --- |
+| `Finding model…` | Resolving the model on the remote repository |
+| `Downloading model… file N of 6` | Transferring, with bytes on disk alongside |
+| `Preparing model…` | Core ML compiling for this machine; no network activity |
+| `Ready` | Usable |
+
+Download progress is counted in **files, not bytes**. The model is six files
+of which `AudioEncoder.mlmodelc` is about 1.3 GB of the 1.6 GB total, so the
+file count appears frozen for most of the download. The size on disk shown
+beside it is the reliable indicator of movement.
+
+`Preparing model…` is Core ML compiling the model for this specific device. It
+is CPU-bound, shows no network activity at all, and on a machine that has not
+seen this model before it can take minutes. It is not a hang.
+
+**Troubleshooting → Copy Diagnostics** in the menu puts a full report on the
+clipboard: versions, architecture, storage path and writability, free space, a
+per-file listing of the model folder with sizes, and reachability probes
+against the model host. **Reveal Model Folder in Finder** opens the download
+location so a partial transfer is visible directly.
+
+`WHISPEROID_DUMP_DIAGNOSTICS=1` writes that same report to the unified log
+instead, for a machine where using the menu is inconvenient.
+
+Two overrides exist for exercising first-run behaviour without disturbing an
+existing install:
+
+```sh
+open build/Whisperoid.app \
+    --env WHISPEROID_SUPPORT_DIR=/tmp/whisperoid-fresh \
+    --env WHISPEROID_MODEL_VARIANT=openai_whisper-base
+```
+
 Setting `WHISPEROID_SHOW_SETTINGS=1` opens preferences shortly after launch,
 which allows the window to be verified without driving the menu bar:
 

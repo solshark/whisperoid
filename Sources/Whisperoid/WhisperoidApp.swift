@@ -60,6 +60,15 @@ struct MenuContent: View {
 
         Divider()
 
+        Menu("Troubleshooting") {
+            Button("Copy Diagnostics") {
+                controller.copyDiagnostics()
+            }
+            Button("Reveal Model Folder in Finder") {
+                controller.revealModelFolder()
+            }
+        }
+
         Button("Preferences…") {
             controller.showSettings()
         }
