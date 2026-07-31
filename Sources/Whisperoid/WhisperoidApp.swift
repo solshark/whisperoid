@@ -13,10 +13,6 @@ struct WhisperoidApp: App {
             Image(systemName: controller.iconName)
         }
         .menuBarExtraStyle(.menu)
-
-        Settings {
-            SettingsView(controller: controller)
-        }
     }
 }
 
@@ -64,11 +60,8 @@ struct MenuContent: View {
 
         Divider()
 
-        // SettingsLink is the supported way to open the Settings scene.
-        // NSApp.sendAction(Selector(("showSettingsWindow:"))) does not work
-        // reliably from a MenuBarExtra and silently does nothing.
-        SettingsLink {
-            Text("Preferences…")
+        Button("Preferences…") {
+            controller.showSettings()
         }
         .keyboardShortcut(",")
 

@@ -37,6 +37,22 @@ struct SettingsView: View {
                     ) {
                         Text(String(format: "Silence before stopping: %.1f s", seconds))
                     }
+                    let drop = controller.preferences.silenceDropDecibels
+                    Slider(
+                        value: Binding(
+                            get: { controller.preferences.silenceDropDecibels },
+                            set: { controller.preferences.silenceDropDecibels = $0 }
+                        ),
+                        in: Preferences.dropRange,
+                        step: 1
+                    ) {
+                        Text(String(format: "Counts as silence below: %.0f dB under your voice", drop))
+                    }
+
+                    Text("The threshold follows the loudest speech in each recording, so it adapts to microphone gain. Lower values make it more eager to stop and can cut you off between phrases; above roughly 25 dB it falls below room noise and never stops at all.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
                     Text("Only applies once you have started speaking, so a pause before your first word will not end the recording.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -81,15 +97,11 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        // A fixed vertical size would force the window taller than a 1080-point
+        // display; a maximum lets the form scroll instead.
         .frame(width: 460)
-        .fixedSize(horizontal: false, vertical: true)
-        .onAppear {
-            controller.refreshLaunchAtLogin()
-            // The app is an accessory with no Dock icon, so the settings window
-            // opens behind the frontmost application unless it is raised here.
-            NSApp.activate()
-            NSApp.windows.first { $0.title == "Whisperoid Settings" || $0.isVisible }?
-                .makeKeyAndOrderFront(nil)
-        }
+        .frame(minHeight: 420, maxHeight: 760)
+        // Activation and ordering are handled by SettingsWindowController.
+        .onAppear { controller.refreshLaunchAtLogin() }
     }
 }

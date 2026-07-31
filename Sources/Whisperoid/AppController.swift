@@ -47,8 +47,13 @@ final class AppController {
     private let transcriber = Transcriber()
     private let injector: any TextInjector = ClipboardInjector()
     private let overlay = OverlayController()
+    private let settingsWindow = SettingsWindowController()
     private var tickTimer: Timer?
     private var silenceDetector: SilenceDetector?
+
+    func showSettings() {
+        settingsWindow.show(controller: self)
+    }
 
     init() {
         KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [weak self] in
@@ -59,6 +64,15 @@ final class AppController {
         }
         KeyboardShortcuts.disable(.cancelDictation)
 
+        // Diagnostic hook: opens preferences shortly after launch so the window
+        // can be verified without driving the menu bar.
+        if ProcessInfo.processInfo.environment["WHISPEROID_SHOW_SETTINGS"] != nil {
+            Task {
+                try? await Task.sleep(for: .milliseconds(800))
+                showSettings()
+            }
+        }
+
         Task { await loadModel() }
     }
 
@@ -68,18 +82,14 @@ final class AppController {
         let started = Date()
         do {
             let directory = try Paths.ensureSupportDirectory()
-            log("loading \(Transcriber.modelVariant) from \(directory.path)")
+            Log.info("loading \(Transcriber.modelVariant) from \(directory.path)")
             try await transcriber.load(storageDirectory: directory)
-            log(String(format: "model ready in %.2f s", Date().timeIntervalSince(started)))
+            Log.info(String(format: "model ready in %.2f s", Date().timeIntervalSince(started)))
             state = .idle
         } catch {
-            log("model load failed: \(error)")
+            Log.error("model load failed: \(error)")
             state = .failed("Model load failed: \(error.localizedDescription)")
         }
-    }
-
-    private func log(_ message: String) {
-        FileHandle.standardError.write(Data("whisperoid: \(message)\n".utf8))
     }
 
     // MARK: - Dictation
@@ -107,9 +117,11 @@ final class AppController {
                 state = .recording
 
                 silenceDetector = preferences.autoStopOnSilence
-                    ? SilenceDetector(requiredSilence: preferences.silenceSeconds)
+                    ? SilenceDetector(
+                        dropDecibels: Float(preferences.silenceDropDecibels),
+                        requiredSilence: preferences.silenceSeconds
+                    )
                     : nil
-                silenceDetector?.reset()
 
                 overlay.model.levels = []
                 overlay.model.elapsed = 0

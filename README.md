@@ -121,7 +121,8 @@ Preferences (`⌘,` from the menu) cover both shortcuts, automatic stop on
 silence, sound cues and opening at login.
 
 Automatic stop only arms once speech has been heard, so a pause before the
-first word will not end the recording. It defaults to 4 s of silence.
+first word will not end the recording. It defaults to 4 s of silence, and both
+the wait and the threshold are adjustable in preferences.
 
 The silence threshold is derived from the loudest speech in the current
 recording, not fixed in dBFS. Absolute levels depend entirely on microphone
@@ -145,6 +146,33 @@ the threshold falls under the room's noise floor and auto-stop never fires.
 
 Opening at login uses `SMAppService`, which records wherever the app currently
 lives. Move it to /Applications before enabling.
+
+## Diagnostics
+
+The app logs to the unified log, not stderr: an app bundle launched by
+LaunchServices has no terminal attached, so stderr is discarded exactly when it
+would be most useful.
+
+```sh
+/usr/bin/log stream --predicate 'subsystem == "com.solshark.whisperoid"'
+/usr/bin/log show --predicate 'subsystem == "com.solshark.whisperoid"' --last 5m --style compact
+```
+
+Use the absolute path. `log` is shadowed in some shells, and the resulting
+error is easy to mistake for an empty result. Messages are emitted at `notice`
+rather than `info`, because info-level entries are held in memory only and are
+routinely dropped before `log show` can retrieve them.
+
+Setting `WHISPEROID_SHOW_SETTINGS=1` opens preferences shortly after launch,
+which allows the window to be verified without driving the menu bar:
+
+```sh
+open build/Whisperoid.app --env WHISPEROID_SHOW_SETTINGS=1
+```
+
+Note that a process launched from a background shell cannot take focus from the
+frontmost application, so `active=false` in that situation is expected and does
+not indicate a fault.
 
 ## Distribution
 
