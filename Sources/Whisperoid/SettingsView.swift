@@ -11,66 +11,45 @@ struct SettingsView: View {
             Section("Shortcuts") {
                 KeyboardShortcuts.Recorder("Start and stop dictation:", name: .toggleDictation)
                 KeyboardShortcuts.Recorder("Discard recording:", name: .cancelDictation)
-                Text("The discard shortcut is only active while recording, so it behaves normally the rest of the time.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                caption("Discard is only active while recording.")
             }
 
             Section("Recording") {
                 Toggle(
                     "Stop automatically after a silence",
-                    isOn: Binding(
-                        get: { controller.preferences.autoStopOnSilence },
-                        set: { controller.preferences.autoStopOnSilence = $0 }
-                    )
+                    isOn: binding(\.autoStopOnSilence)
                 )
 
-                if controller.preferences.autoStopOnSilence {
-                    let seconds = controller.preferences.silenceSeconds
-                    Slider(
-                        value: Binding(
-                            get: { controller.preferences.silenceSeconds },
-                            set: { controller.preferences.silenceSeconds = $0 }
-                        ),
-                        in: Preferences.silenceRange,
-                        step: 0.5
-                    ) {
-                        Text(String(format: "Silence before stopping: %.1f s", seconds))
-                    }
-                    let drop = controller.preferences.silenceDropDecibels
-                    Slider(
-                        value: Binding(
-                            get: { controller.preferences.silenceDropDecibels },
-                            set: { controller.preferences.silenceDropDecibels = $0 }
-                        ),
-                        in: Preferences.dropRange,
-                        step: 1
-                    ) {
-                        Text(String(format: "Counts as silence below: %.0f dB under your voice", drop))
+                // Kept visible and disabled rather than hidden: showing and
+                // hiding them changes the content height, and the window is
+                // sized to its content when it is created. Scoped to a Group so
+                // the toggle above stays usable.
+                Group {
+                    LabeledContent("Silence before stopping") {
+                        sliderRow(
+                            value: binding(\.silenceSeconds),
+                            range: Preferences.silenceRange,
+                            step: 0.5,
+                            text: String(format: "%.1f s", controller.preferences.silenceSeconds)
+                        )
                     }
 
-                    Text("The threshold follows the loudest speech in each recording, so it adapts to microphone gain. Lower values make it more eager to stop and can cut you off between phrases; above roughly 25 dB it falls below room noise and never stops at all.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    LabeledContent("Counts as silence below") {
+                        sliderRow(
+                            value: binding(\.silenceDropDecibels),
+                            range: Preferences.dropRange,
+                            step: 1,
+                            text: String(format: "%.0f dB", controller.preferences.silenceDropDecibels)
+                        )
+                    }
 
-                    Text("Only applies once you have started speaking, so a pause before your first word will not end the recording.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    caption("Measured against your loudest speech, so it adapts to microphone gain. Lower stops sooner; past about 25 dB it may never stop. Recording always stops after \(Int(AppController.maximumRecordingSeconds / 60)) minutes.")
                 }
-
-                Text("Recording always stops after \(Int(AppController.maximumRecordingSeconds / 60)) minutes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .disabled(!controller.preferences.autoStopOnSilence)
             }
 
             Section("Feedback") {
-                Toggle(
-                    "Play sounds",
-                    isOn: Binding(
-                        get: { controller.preferences.playSounds },
-                        set: { controller.preferences.playSounds = $0 }
-                    )
-                )
+                Toggle("Play sounds", isOn: binding(\.playSounds))
             }
 
             Section("General") {
@@ -91,17 +70,47 @@ struct SettingsView: View {
                     }
                 }
 
-                Text("Move Whisperoid to your Applications folder before enabling this; the login item records wherever the app currently lives.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                caption("Move Whisperoid to Applications before enabling; the login item records where the app currently lives.")
             }
         }
         .formStyle(.grouped)
-        // A fixed vertical size would force the window taller than a 1080-point
-        // display; a maximum lets the form scroll instead.
-        .frame(width: 460)
-        .frame(minHeight: 420, maxHeight: 760)
-        // Activation and ordering are handled by SettingsWindowController.
+        .frame(width: 520)
+        .fixedSize(horizontal: false, vertical: true)
+        // Activation and placement are handled by SettingsWindowController.
         .onAppear { controller.refreshLaunchAtLogin() }
+    }
+
+    // MARK: - Building blocks
+
+    private func binding<Value>(
+        _ keyPath: ReferenceWritableKeyPath<Preferences, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { controller.preferences[keyPath: keyPath] },
+            set: { controller.preferences[keyPath: keyPath] = $0 }
+        )
+    }
+
+    private func sliderRow(
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        text: String
+    ) -> some View {
+        HStack(spacing: 10) {
+            Slider(value: value, in: range, step: step)
+            Text(text)
+                .font(.body)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 48, alignment: .trailing)
+        }
+    }
+
+    private func caption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
