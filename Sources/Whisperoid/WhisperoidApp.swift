@@ -13,6 +13,10 @@ struct WhisperoidApp: App {
             Image(systemName: controller.iconName)
         }
         .menuBarExtraStyle(.menu)
+
+        Settings {
+            SettingsView(controller: controller)
+        }
     }
 }
 
@@ -59,6 +63,15 @@ struct MenuContent: View {
         }
 
         Divider()
+
+        Button("Preferences…") {
+            // The app is an accessory with no Dock icon, so it must be brought
+            // forward explicitly or the settings window opens behind whatever
+            // the user is looking at.
+            NSApp.activate()
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        }
+        .keyboardShortcut(",")
 
         Button("Quit Whisperoid") {
             NSApplication.shared.terminate(nil)

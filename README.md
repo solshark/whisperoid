@@ -81,9 +81,18 @@ open build/Whisperoid.app
 ```
 
 SwiftPM cannot emit an `.app` bundle, so the script wraps the executable by
-hand. It signs with an Apple Development identity rather than ad-hoc: an ad-hoc
-signature changes on every build, which invalidates the permissions granted to
-the previous build. Override with `WHISPEROID_SIGN_IDENTITY`.
+hand. It signs with a real certificate rather than ad-hoc: an ad-hoc signature
+changes on every build, which invalidates the permissions macOS granted to the
+previous build and makes the microphone prompt reappear each time. A Developer
+ID Application certificate is preferred when present; otherwise an Apple
+Development identity is used. Override with `WHISPEROID_SIGN_IDENTITY`.
+
+Signing applies the hardened runtime, which notarisation requires, along with
+the `com.apple.security.device.audio-input` entitlement that the hardened
+runtime requires for microphone access. The nested `.bundle` directories from
+SwiftPM hold no Mach-O code and are sealed as resources by the app signature;
+signing them individually fails because swift-crypto's bundle has no
+`Info.plist`.
 
 The model is downloaded on first launch (about 1.5 GB) into
 `~/Library/Application Support/Whisperoid`.
@@ -104,4 +113,49 @@ the stored value to pick up a new one:
 
 ```sh
 defaults delete com.solshark.whisperoid KeyboardShortcuts_toggleDictation
+```
+
+Preferences (`⌘,` from the menu) cover both shortcuts, automatic stop on
+silence, sound cues and opening at login.
+
+Automatic stop only arms once speech has been heard, so a pause before the
+first word will not end the recording. It defaults to 3 s of silence.
+
+Opening at login uses `SMAppService`, which records wherever the app currently
+lives. Move it to /Applications before enabling.
+
+## Distribution
+
+```sh
+./scripts/package.sh
+```
+
+Produces `dist/Whisperoid-<version>.zip`. The archive is built with `ditto`
+rather than `zip`, which does not preserve the symlinks and extended attributes
+inside an `.app` bundle and corrupts the signature on extraction.
+
+Gatekeeper only accepts an app on another Mac without complaint when it is
+signed with a **Developer ID Application** certificate and notarised. With
+`notarytool` credentials stored in the keychain, the script does both:
+
+```sh
+xcrun notarytool store-credentials whisperoid \
+    --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
+
+WHISPEROID_NOTARY_PROFILE=whisperoid ./scripts/package.sh
+```
+
+Without that certificate the archive still works, but the recipient must clear
+the quarantine flag once after unzipping:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Whisperoid.app
+```
+
+If an Apple Development signature causes trouble on a machine other than the
+one that built it, an ad-hoc signature is a working alternative and carries the
+entitlements and hardened runtime correctly:
+
+```sh
+WHISPEROID_SIGN_IDENTITY="-" ./scripts/package.sh
 ```

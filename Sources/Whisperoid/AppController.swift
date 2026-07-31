@@ -38,12 +38,17 @@ final class AppController {
     private(set) var state: State = .loading
     private(set) var recordedSeconds: Double = 0
     private(set) var history: [Transcription] = []
+    private(set) var launchAtLoginEnabled = LaunchAtLogin.isEnabled
+    private(set) var launchAtLoginMessage: String?
+
+    let preferences = Preferences()
 
     private let recorder = AudioRecorder()
     private let transcriber = Transcriber()
     private let injector: any TextInjector = ClipboardInjector()
     private let overlay = OverlayController()
     private var tickTimer: Timer?
+    private var silenceDetector: SilenceDetector?
 
     init() {
         KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [weak self] in
@@ -101,9 +106,15 @@ final class AppController {
                 recordedSeconds = 0
                 state = .recording
 
+                silenceDetector = preferences.autoStopOnSilence
+                    ? SilenceDetector(requiredSilence: preferences.silenceSeconds)
+                    : nil
+
                 overlay.model.levels = []
                 overlay.model.elapsed = 0
                 overlay.present(.recording)
+
+                if preferences.playSounds { Sounds.playStart() }
 
                 KeyboardShortcuts.enable(.cancelDictation)
                 startTicking()
@@ -146,6 +157,8 @@ final class AppController {
                 overlay.update(.done)
                 overlay.dismiss(after: Self.successDismissDelay)
 
+                if preferences.playSounds { Sounds.playFinished() }
+
                 state = .idle
             } catch {
                 fail(error.localizedDescription)
@@ -172,6 +185,7 @@ final class AppController {
         overlay.model.message = message
         overlay.update(.failed)
         overlay.dismiss(after: Self.failureDismissDelay)
+        if preferences.playSounds { Sounds.playFailed() }
     }
 
     func copy(_ transcription: Transcription) {
@@ -189,8 +203,27 @@ final class AppController {
 
     private func endRecordingSession() {
         stopTicking()
+        silenceDetector = nil
         KeyboardShortcuts.disable(.cancelDictation)
         recordedSeconds = 0
+    }
+
+    // MARK: - Launch at login
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            try LaunchAtLogin.set(enabled)
+            launchAtLoginMessage = LaunchAtLogin.requiresUserApproval
+                ? "Approval is needed in System Settings > General > Login Items."
+                : nil
+        } catch {
+            launchAtLoginMessage = error.localizedDescription
+        }
+        launchAtLoginEnabled = LaunchAtLogin.isEnabled
+    }
+
+    func refreshLaunchAtLogin() {
+        launchAtLoginEnabled = LaunchAtLogin.isEnabled
     }
 
     // MARK: - Recording tick
@@ -201,10 +234,16 @@ final class AppController {
         let timer = Timer(timeInterval: Self.waveformInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.state == .recording else { return }
+
                 self.recordedSeconds = self.recorder.recordedSeconds
                 self.overlay.model.levels = self.recorder.recentLevels
                 self.overlay.model.elapsed = self.recordedSeconds
+
                 if self.recordedSeconds >= Self.maximumRecordingSeconds {
+                    self.finishRecording()
+                    return
+                }
+                if self.silenceDetector?.update(level: self.recorder.currentLevel) == true {
                     self.finishRecording()
                 }
             }
