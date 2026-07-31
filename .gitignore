@@ -1,0 +1,14 @@
+# SwiftPM build products
+.build/
+.swiftpm/
+
+# Assembled application bundle
+build/
+
+# Audio fixtures: regenerable, and the real ones are voice recordings
+*.wav
+*.aifc
+*.aiff
+
+# macOS
+.DS_Store
