@@ -90,6 +90,18 @@ The model is downloaded on first launch (about 1.5 GB) into
 
 ## Usage
 
-Default shortcut is `⌥⌘D` to start and stop. `Escape` discards a recording
+Default shortcut is `⌘⌃D` to start and stop. `Escape` discards a recording
 without transcribing, and is only registered while recording. Recording stops
 automatically after 300 s; anything under 0.3 s is ignored.
+
+`⌘⌃D` is not a macOS symbolic hotkey, but it is AppKit's built-in "Look Up in
+Dictionary" shortcut within text views. A Carbon hotkey takes precedence, so
+that lookup is shadowed while the app is running.
+
+Note that `KeyboardShortcuts` persists its initial value to `UserDefaults` on
+first launch, so changing the default in source has no effect afterwards. Clear
+the stored value to pick up a new one:
+
+```sh
+defaults delete com.solshark.whisperoid KeyboardShortcuts_toggleDictation
+```
