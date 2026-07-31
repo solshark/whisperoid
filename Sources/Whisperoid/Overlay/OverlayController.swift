@@ -107,8 +107,9 @@ final class OverlayController {
             context.duration = 0.35
             panel.animator().alphaValue = 0
         } completionHandler: {
-            // AppKit invokes this on the main thread; the signature is untyped.
-            MainActor.assumeIsolated { panel.orderOut(nil) }
+            // Untyped AppKit callback: enter the actor rather than assert that
+            // we are already on it.
+            Task { @MainActor in panel.orderOut(nil) }
         }
     }
 }

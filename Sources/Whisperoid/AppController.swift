@@ -68,13 +68,25 @@ final class AppController {
     }
 
     init() {
+        // These fire from a Carbon C callback. That callback runs on the main
+        // thread, but the main thread is not the main actor's executor as far
+        // as the concurrency runtime is concerned, so MainActor.assumeIsolated
+        // reads an executor reference that is not valid during launch and
+        // traps. Entering the actor properly is the only safe option.
         KeyboardShortcuts.onKeyUp(for: .toggleDictation) { [weak self] in
-            MainActor.assumeIsolated { self?.toggle() }
+            Task { @MainActor in self?.toggle() }
         }
         KeyboardShortcuts.onKeyUp(for: .cancelDictation) { [weak self] in
-            MainActor.assumeIsolated { self?.cancel() }
+            Task { @MainActor in self?.cancel() }
         }
         KeyboardShortcuts.disable(.cancelDictation)
+
+        // Connecting or removing an input device invalidates the format the tap
+        // was installed with. Finish with whatever was captured rather than keep
+        // recording audio that cannot be trusted.
+        recorder.onConfigurationChange = { [weak self] in
+            Task { @MainActor in self?.handleAudioConfigurationChange() }
+        }
 
         // Diagnostic hook: opens preferences shortly after launch so the window
         // can be verified without driving the menu bar.
@@ -146,7 +158,7 @@ final class AppController {
         phaseChangedAt = Date()
 
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
+            Task { @MainActor in
                 guard let self, self.state == .loading else { return }
                 self.measureDownloadedBytes()
 
@@ -261,6 +273,13 @@ final class AppController {
         }
     }
 
+    private func handleAudioConfigurationChange() {
+        guard state == .recording else { return }
+        Log.info(String(format: "audio: input configuration changed after %.1f s; finishing early",
+                        recordedSeconds))
+        finishRecording()
+    }
+
     func cancel() {
         guard state == .recording else { return }
         recorder.cancel()
@@ -369,7 +388,7 @@ final class AppController {
         stopTicking()
 
         let timer = Timer(timeInterval: Self.waveformInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
+            Task { @MainActor in
                 guard let self, self.state == .recording else { return }
 
                 self.recordedSeconds = self.recorder.recordedSeconds

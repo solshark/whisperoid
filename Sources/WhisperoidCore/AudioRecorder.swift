@@ -32,6 +32,16 @@ public final class AudioRecorder: @unchecked Sendable {
     private var levels: [Float] = []
     private var converter: AVAudioConverter?
     private var isRunning = false
+    private var configurationObserver: NSObjectProtocol?
+
+    /// Called when the audio hardware configuration changes while recording,
+    /// which happens when a device is connected, removed, or made the default.
+    ///
+    /// The tap is installed with the input format that was current at `start()`.
+    /// Once the hardware changes, that format is no longer guaranteed to match,
+    /// and continuing would capture silence or malformed audio without any
+    /// indication that something went wrong.
+    public var onConfigurationChange: (@Sendable () -> Void)?
 
     public init() {}
 
@@ -107,6 +117,14 @@ public final class AudioRecorder: @unchecked Sendable {
             throw RecorderError.engineFailed(error.localizedDescription)
         }
 
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.onConfigurationChange?()
+        }
+
         isRunning = true
     }
 
@@ -114,6 +132,11 @@ public final class AudioRecorder: @unchecked Sendable {
     @discardableResult
     public func stop() -> [Float] {
         guard isRunning else { return [] }
+
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
