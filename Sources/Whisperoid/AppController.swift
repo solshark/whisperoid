@@ -273,13 +273,16 @@ final class AppController {
 
     // MARK: - Presentation
 
+    /// Deliberately avoids a microphone glyph. macOS already shows its own
+    /// orange microphone indicator whenever the input is live, and a second
+    /// microphone sitting next to it is redundant and confusing.
     var iconName: String {
         switch state {
         case .loading: "hourglass"
-        case .idle: "mic"
-        case .recording: "mic.fill"
-        case .transcribing: "waveform"
-        case .failed: "exclamationmark.triangle"
+        case .idle: "waveform"
+        case .recording: "waveform.circle.fill"
+        case .transcribing: "ellipsis.circle"
+        case .failed: "waveform.badge.exclamationmark"
         }
     }
 

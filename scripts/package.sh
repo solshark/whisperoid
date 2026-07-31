@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
 #
-# Produces a distributable archive of Whisperoid.app in dist/.
+# Produces a distributable disk image in dist/.
 #
-# The archive is created with `ditto`, not `zip`: `zip` does not preserve the
-# symlinks and extended attributes inside an .app bundle, which breaks the code
-# signature on extraction.
+# The image contains the app alongside a symlink to /Applications, which is the
+# conventional drag-to-install layout on macOS.
 #
 # Gatekeeper on another Mac only accepts an app signed with a Developer ID
 # Application certificate and notarised by Apple. Without one this script still
-# produces a working archive, but the recipient must clear the quarantine flag
-# by hand; the instructions are printed at the end.
+# produces a working image, but the recipient must clear the quarantine flag by
+# hand; the instructions are printed at the end.
 #
 # Environment:
 #   WHISPEROID_SIGN_IDENTITY   codesign identity (passed through to build-app.sh)
@@ -21,16 +20,39 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/build/Whisperoid.app"
 DIST="$ROOT/dist"
+VOLUME="Whisperoid"
 
 "$ROOT/scripts/build-app.sh"
 
 VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")"
-ARCHIVE="$DIST/Whisperoid-$VERSION.zip"
+DMG="$DIST/Whisperoid-$VERSION.dmg"
+SIGNED_BY="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
 
 mkdir -p "$DIST"
-rm -f "$ARCHIVE"
+rm -f "$DMG"
 
-SIGNED_BY="$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+STAGING="$(mktemp -d)"
+trap 'rm -rf "$STAGING"' EXIT
+
+cp -R "$APP" "$STAGING/"
+ln -s /Applications "$STAGING/Applications"
+
+echo "==> building disk image"
+# HFS+ rather than APFS: an APFS image cannot be mounted by older macOS, and
+# there is nothing here that benefits from APFS.
+hdiutil create \
+	-volname "$VOLUME" \
+	-srcfolder "$STAGING" \
+	-fs HFS+ \
+	-format UDZO \
+	-ov \
+	-quiet \
+	"$DMG"
+
+if [[ "$SIGNED_BY" != "-" && -n "$SIGNED_BY" ]]; then
+	codesign --force --sign "${WHISPEROID_SIGN_IDENTITY:-$SIGNED_BY}" "$DMG" 2>/dev/null \
+		|| echo "note: could not sign the disk image; the app inside is still signed"
+fi
 
 if [[ -n "${WHISPEROID_NOTARY_PROFILE:-}" ]]; then
 	if [[ "$SIGNED_BY" != Developer\ ID* ]]; then
@@ -40,32 +62,25 @@ if [[ -n "${WHISPEROID_NOTARY_PROFILE:-}" ]]; then
 	fi
 
 	echo "==> submitting for notarisation"
-	ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
-	xcrun notarytool submit "$ARCHIVE" \
-		--keychain-profile "$WHISPEROID_NOTARY_PROFILE" --wait
+	xcrun notarytool submit "$DMG" --keychain-profile "$WHISPEROID_NOTARY_PROFILE" --wait
 
 	echo "==> stapling ticket"
-	xcrun stapler staple "$APP"
-	xcrun stapler validate "$APP"
-
-	# Re-archive so the stapled ticket is inside the distributed copy.
-	rm -f "$ARCHIVE"
+	xcrun stapler staple "$DMG"
+	xcrun stapler validate "$DMG"
 fi
-
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 
 echo
 echo "version:   $VERSION"
 echo "signed by: $SIGNED_BY"
-echo "archive:   $ARCHIVE"
-echo "size:      $(du -h "$ARCHIVE" | cut -f1)"
+echo "image:     $DMG"
+echo "size:      $(du -h "$DMG" | cut -f1)"
 echo
 
 if [[ "$SIGNED_BY" == Developer\ ID* && -n "${WHISPEROID_NOTARY_PROFILE:-}" ]]; then
-	echo "Notarised. The recipient can unzip and run it directly."
+	echo "Notarised. The recipient can open the image and drag the app across."
 else
 	echo "NOT notarised. Gatekeeper will refuse to open this on another Mac."
-	echo "The recipient must run, once, after unzipping:"
+	echo "After dragging the app to Applications, the recipient runs once:"
 	echo
 	echo "    xattr -dr com.apple.quarantine /Applications/Whisperoid.app"
 	echo

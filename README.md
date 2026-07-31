@@ -71,7 +71,7 @@ Sources/
   vadcheck/           Development tool for tuning auto-stop against a recording
 Resources/            Bundle configuration and entitlements
 scripts/build-app.sh  Assembles and signs Whisperoid.app
-scripts/package.sh    Produces a distributable archive in dist/
+scripts/package.sh    Produces a distributable disk image in dist/
 spike/                Standalone benchmark harness from model selection
 ```
 
@@ -147,6 +147,24 @@ the threshold falls under the room's noise floor and auto-stop never fires.
 Opening at login uses `SMAppService`, which records wherever the app currently
 lives. Move it to /Applications before enabling.
 
+## Privacy
+
+Audio never reaches disk. The only filesystem write the app performs is
+creating its support directory for the model cache.
+
+- Captured samples are held in memory and cleared by `stop()` and `cancel()`.
+- Samples are handed to WhisperKit as an array, not a file path. WhisperKit's
+  transcription path contains no `write(to:)`, no temporary directory use and
+  no `AVAudioFile(forWriting:)`.
+- Transcript history is text only, held in memory, capped at ten entries, and
+  discarded when the app quits. It is not written to `UserDefaults` or disk.
+- Nothing transcribed is logged. Log entries carry the model name, storage
+  path, load timing and window geometry only.
+
+The transcript is placed on the clipboard by design. A clipboard manager will
+therefore archive it to disk, outside this app's control, which is worth
+knowing before dictating anything sensitive.
+
 ## Diagnostics
 
 The app logs to the unified log, not stderr: an app bundle launched by
@@ -180,9 +198,9 @@ not indicate a fault.
 ./scripts/package.sh
 ```
 
-Produces `dist/Whisperoid-<version>.zip`. The archive is built with `ditto`
-rather than `zip`, which does not preserve the symlinks and extended attributes
-inside an `.app` bundle and corrupts the signature on extraction.
+Produces `dist/Whisperoid-<version>.dmg` containing the app beside a symlink to
+`/Applications`, which is the conventional drag-to-install layout. The image is
+HFS+ rather than APFS so that older versions of macOS can mount it.
 
 Gatekeeper only accepts an app on another Mac without complaint when it is
 signed with a **Developer ID Application** certificate and notarised. With
@@ -195,8 +213,8 @@ xcrun notarytool store-credentials whisperoid \
 WHISPEROID_NOTARY_PROFILE=whisperoid ./scripts/package.sh
 ```
 
-Without that certificate the archive still works, but the recipient must clear
-the quarantine flag once after unzipping:
+Without that certificate the image still works, but the recipient must clear
+the quarantine flag once after dragging the app across:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Whisperoid.app
