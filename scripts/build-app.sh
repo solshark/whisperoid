@@ -18,17 +18,28 @@ CONFIG="${CONFIG:-release}"
 APP="$ROOT/build/Whisperoid.app"
 ENTITLEMENTS="$ROOT/Resources/Whisperoid.entitlements"
 
-# Prefer Developer ID when present: it is the only identity that Gatekeeper
-# accepts on a Mac other than this one.
+# Chooses whatever is actually available rather than naming one identity.
+# Certificates expire, and a hardcoded name fails the build the day it does.
+#
+# Developer ID first: it is the only identity Gatekeeper accepts on a Mac other
+# than this one. Note that changing identity changes the app's designated
+# requirement, so macOS treats it as a different application and the microphone
+# permission has to be granted again.
 default_identity() {
-	local developer_id
-	developer_id="$(security find-identity -v -p codesigning 2>/dev/null \
-		| grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)".*/\1/')"
-	if [[ -n "$developer_id" ]]; then
-		echo "$developer_id"
-	else
-		echo "Apple Development: redacted@example.com (REDACTED)"
-	fi
+	local list identity
+	list="$(security find-identity -v -p codesigning 2>/dev/null)"
+
+	for kind in "Developer ID Application" "Apple Development"; do
+		identity="$(echo "$list" | grep "$kind" | head -1 | sed -E 's/.*"(.*)".*/\1/')"
+		if [[ -n "$identity" ]]; then
+			echo "$identity"
+			return
+		fi
+	done
+
+	echo "warning: no signing certificate found; falling back to ad-hoc." >&2
+	echo "         permissions will be re-requested after every build." >&2
+	echo "-"
 }
 
 IDENTITY="${WHISPEROID_SIGN_IDENTITY:-$(default_identity)}"
@@ -48,6 +59,13 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/Whisperoid"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+
+# Referenced by CFBundleIconFile. Regenerate with scripts/make-icon.swift.
+if [[ -f "$ROOT/Resources/Whisperoid.icns" ]]; then
+	cp "$ROOT/Resources/Whisperoid.icns" "$APP/Contents/Resources/Whisperoid.icns"
+else
+	echo "warning: Resources/Whisperoid.icns missing; the app will have no icon" >&2
+fi
 
 # SwiftPM emits dependency resources (e.g. KeyboardShortcuts localisations) as
 # sibling .bundle directories; they must travel with the app.
