@@ -7,12 +7,7 @@ final class OverlayController {
 
     let model = OverlayModel()
 
-    private static let width: CGFloat = 440
-    private static let compactHeight: CGFloat = 72
-    private static let expandedHeight: CGFloat = 96
-
-    /// Distance from the bottom of the active screen's visible area.
-    private static let bottomInset: CGFloat = 96
+    private static let size = NSSize(width: 560, height: 220)
 
     private var panel: OverlayPanel?
     private var dismissTask: Task<Void, Never>?
@@ -21,13 +16,20 @@ final class OverlayController {
         dismissTask?.cancel()
         dismissTask = nil
 
-        model.phase = phase
+        setPhase(phase)
 
         let panel = existingPanel()
-        resize(panel, for: phase)
         place(panel)
-        panel.alphaValue = 1
+
+        // Reveal over a couple of frames rather than instantly. The window's
+        // backing store still holds the last frame it drew, so showing it at
+        // full opacity flashes the previous result before SwiftUI redraws.
+        panel.alphaValue = 0
         panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            panel.animator().alphaValue = 1
+        }
     }
 
     /// Updates the phase of an already visible panel without re-placing it, so
@@ -39,8 +41,13 @@ final class OverlayController {
         }
         dismissTask?.cancel()
         dismissTask = nil
+        setPhase(phase)
+    }
+
+    /// Records when the phase began so the ribbons can ease to rest from it.
+    private func setPhase(_ phase: OverlayModel.Phase) {
         model.phase = phase
-        resize(panel, for: phase)
+        model.phaseChangedAt = Date()
     }
 
     func dismiss(after seconds: Double) {
@@ -63,9 +70,10 @@ final class OverlayController {
     private func existingPanel() -> OverlayPanel {
         if let panel { return panel }
 
-        let created = OverlayPanel(
-            contentSize: NSSize(width: Self.width, height: Self.compactHeight)
-        )
+        let created = OverlayPanel(contentSize: Self.size)
+        // No window shadow: it would outline an invisible rectangle around a
+        // graphic that has no panel behind it.
+        created.hasShadow = false
         let hosting = NSHostingView(rootView: OverlayView(model: model))
         hosting.frame = NSRect(origin: .zero, size: created.frame.size)
         hosting.autoresizingMask = [.width, .height]
@@ -73,17 +81,6 @@ final class OverlayController {
 
         panel = created
         return created
-    }
-
-    private func resize(_ panel: OverlayPanel, for phase: OverlayModel.Phase) {
-        let height = phase == .done ? Self.expandedHeight : Self.compactHeight
-        guard panel.frame.height != height else { return }
-
-        // Grow upwards so the bottom edge stays put.
-        var frame = panel.frame
-        frame.origin.y -= height - frame.height
-        frame.size.height = height
-        panel.setFrame(frame, display: true, animate: false)
     }
 
     private func place(_ panel: OverlayPanel) {
@@ -94,10 +91,7 @@ final class OverlayController {
 
         let size = panel.frame.size
         panel.setFrameOrigin(
-            NSPoint(
-                x: visible.midX - size.width / 2,
-                y: visible.minY + Self.bottomInset
-            )
+            NSPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2)
         )
     }
 

@@ -15,6 +15,10 @@ final class OverlayModel {
 
     var phase: Phase = .recording
 
+    /// When the current phase began. The waves ease to rest relative to this,
+    /// so completion resolves rather than snapping.
+    var phaseChangedAt = Date()
+
     /// Recent microphone RMS readings, oldest first.
     var levels: [Float] = []
     var elapsed: TimeInterval = 0

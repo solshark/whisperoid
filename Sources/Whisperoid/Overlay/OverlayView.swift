@@ -1,70 +1,67 @@
 import AppKit
 import SwiftUI
 
+/// The dictation overlay: flowing ribbons with a single line beneath.
+///
+/// Completion is signalled by the ribbons settling to a calm bright line rather
+/// than by an icon. A system checkmark clashed badly with the palette and cut
+/// the motion dead at the moment it should have been resolving. The transcript
+/// preview is deliberately absent too: it is already on the clipboard, and four
+/// lines of text needed far more backing than the soft backdrop can give
+/// without becoming the panel this was meant to replace.
 struct OverlayView: View {
 
     let model: OverlayModel
 
     var body: some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .padding(.horizontal, 22)
-            .padding(.vertical, 16)
-            .background(HUDBackground())
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
-            )
-            .animation(.easeInOut(duration: 0.18), value: model.phase)
+        VStack(spacing: 14) {
+            WavesVisual(levels: model.levels, mode: mode)
+            caption
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(SoftBackdrop())
+        .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
+        .animation(.easeInOut(duration: 0.2), value: model.phase)
+    }
+
+    private var mode: WavesVisual.Mode {
+        switch model.phase {
+        case .recording: .listening
+        case .transcribing: .working
+        case .done, .failed: .settled(since: model.phaseChangedAt)
+        }
     }
 
     @ViewBuilder
-    private var content: some View {
+    private var caption: some View {
         switch model.phase {
         case .recording:
-            HStack(spacing: 16) {
-                WaveformView(levels: model.levels)
-                Spacer(minLength: 8)
-                Text(Self.timestamp(model.elapsed))
-                    .font(.system(size: 15, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
+            Text(Self.timestamp(model.elapsed))
+                .font(.system(size: 20, weight: .light, design: .rounded))
+                .monospacedDigit()
+                .tracking(3)
+                .foregroundStyle(.white.opacity(0.78))
 
         case .transcribing:
-            HStack(spacing: 12) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Transcribing…")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
+            Text("TRANSCRIBING")
+                .font(.system(size: 13, weight: .light, design: .rounded))
+                .tracking(4)
+                .foregroundStyle(.white.opacity(0.7))
 
         case .done:
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Text(doneSummary)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                Text(model.text)
-                    .font(.system(size: 14))
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .foregroundStyle(.primary)
-            }
+            Text(doneSummary)
+                .font(.system(size: 15, weight: .light, design: .rounded))
+                .monospacedDigit()
+                .tracking(2)
+                .foregroundStyle(.white.opacity(0.82))
 
         case .failed:
-            HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text(model.message)
-                    .font(.system(size: 13))
-                    .lineLimit(2)
-                    .foregroundStyle(.primary)
-            }
+            Text(model.message)
+                .font(.system(size: 13, weight: .light, design: .rounded))
+                .foregroundStyle(.orange.opacity(0.95))
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .padding(.horizontal, 40)
         }
     }
 
@@ -79,57 +76,28 @@ struct OverlayView: View {
     }
 }
 
-/// Live microphone trace. Levels arrive oldest first and scroll leftwards.
-private struct WaveformView: View {
-
-    let levels: [Float]
-
-    private static let barCount = 48
-    private static let barWidth: CGFloat = 3
-    private static let maximumHeight: CGFloat = 30
-    private static let minimumHeight: CGFloat = 3
+/// A soft pool of shade behind the overlay.
+///
+/// Drawn as a SwiftUI gradient, not masked material. `NSVisualEffectView` is an
+/// AppKit view rendering into its own layer, and a SwiftUI `.mask()` does not
+/// clip it — the result was an opaque hard-edged rectangle.
+///
+/// An ellipse rather than a circle, because the panel is far wider than it is
+/// tall. Pure shade rather than blur means it is nearly invisible on a dark
+/// desktop, where the text is already legible, and darkens only where it is
+/// actually needed on a light one.
+private struct SoftBackdrop: View {
 
     var body: some View {
-        let shown = Array(levels.suffix(Self.barCount))
-        let leadingGap = Self.barCount - shown.count
-
-        HStack(alignment: .center, spacing: 3) {
-            ForEach(0..<Self.barCount, id: \.self) { index in
-                let level = index < leadingGap ? 0 : shown[index - leadingGap]
-                Capsule()
-                    .fill(Color.primary.opacity(0.75))
-                    .frame(width: Self.barWidth, height: Self.height(for: level))
-            }
-        }
-        .frame(height: Self.maximumHeight)
-        .animation(.linear(duration: 0.08), value: levels)
+        EllipticalGradient(
+            stops: [
+                .init(color: .black.opacity(0.52), location: 0.0),
+                .init(color: .black.opacity(0.40), location: 0.35),
+                .init(color: .black.opacity(0.16), location: 0.70),
+                .init(color: .clear, location: 1.0),
+            ],
+            center: .center
+        )
+        .allowsHitTesting(false)
     }
-
-    private static func height(for rms: Float) -> CGFloat {
-        minimumHeight + CGFloat(normalised(rms)) * (maximumHeight - minimumHeight)
-    }
-
-    /// Maps RMS onto 0...1 across a 60 dB range. A linear mapping spends almost
-    /// all of its range on levels far louder than speech, which reads as a flat
-    /// line at normal talking volume.
-    private static func normalised(_ rms: Float) -> Float {
-        guard rms > 0 else { return 0 }
-        let decibels = 20 * log10(rms)
-        return min(1, max(0, (decibels + 60) / 60))
-    }
-}
-
-/// Native macOS HUD material. SwiftUI's `glassEffect` is not available on macOS
-/// in the current SDK, and this is what system HUDs use in any case.
-private struct HUDBackground: NSViewRepresentable {
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }

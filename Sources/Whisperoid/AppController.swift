@@ -306,8 +306,14 @@ final class AppController {
                     )
                     : nil
 
+                // Clear the previous result, or it flashes up for a frame when
+                // the panel is shown again.
                 overlay.model.levels = []
                 overlay.model.elapsed = 0
+                overlay.model.text = ""
+                overlay.model.language = ""
+                overlay.model.duration = 0
+                overlay.model.message = ""
                 overlay.present(.recording)
 
                 if preferences.playSounds { Sounds.playStart() }
