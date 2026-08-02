@@ -7,6 +7,26 @@ Transcription runs locally via Whisper on the Neural Engine.
 Personal tool, Apple Silicon only. Built and tested on an M3 Max running
 macOS 26.
 
+## Licence
+
+Whisperoid is MIT licensed; see `LICENSE`.
+
+Every dependency is Apache 2.0 or MIT, with no copyleft anywhere in the tree,
+so the source may be published and a binary distributed commercially. Both
+licences require their notices to accompany binary distribution, so
+`Resources/THIRD-PARTY-NOTICES.txt` is copied into the app and shown by
+Acknowledgements in the About window. Regenerate it from the resolved
+dependencies after any change:
+
+```sh
+python3 scripts/make-notices.py
+```
+
+One caveat for commercial distribution: the Core ML weights in
+`argmaxinc/whisperkit-coreml` carry no declared licence. The app downloads them
+at runtime rather than bundling them, so they are not redistributed here. That
+would need resolving before shipping a build with the model included.
+
 ## Design decisions
 
 **Clipboard, not keystroke injection.** The app does not synthesise keystrokes

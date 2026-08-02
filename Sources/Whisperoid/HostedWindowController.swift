@@ -17,6 +17,7 @@ final class HostedWindowController<Content: View>: NSObject, NSWindowDelegate {
 
     private let windowTitle: String
     private let diagnosticName: String
+    private let isResizable: Bool
     private let content: @MainActor () -> Content
 
     private var window: NSWindow?
@@ -24,10 +25,12 @@ final class HostedWindowController<Content: View>: NSObject, NSWindowDelegate {
     init(
         title: String,
         diagnosticName: String,
+        isResizable: Bool = false,
         content: @escaping @MainActor () -> Content
     ) {
         self.windowTitle = title
         self.diagnosticName = diagnosticName
+        self.isResizable = isResizable
         self.content = content
         super.init()
     }
@@ -112,7 +115,9 @@ final class HostedWindowController<Content: View>: NSObject, NSWindowDelegate {
         let hosting = NSHostingController(rootView: content())
         let created = NSWindow(contentViewController: hosting)
         created.title = windowTitle
-        created.styleMask = [.titled, .closable]
+        created.styleMask = isResizable
+            ? [.titled, .closable, .resizable]
+            : [.titled, .closable]
         created.isReleasedWhenClosed = false
         created.delegate = self
         created.setContentSize(hosting.view.fittingSize)

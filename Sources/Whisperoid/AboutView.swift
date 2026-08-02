@@ -5,6 +5,8 @@ import SwiftUI
 /// read once from the bundle, so there is nothing for SwiftUI to write back.
 struct AboutView: View {
 
+    var onShowAcknowledgements: (@MainActor () -> Void)?
+
     private static let author = "Michael Shvets"
     private static let email = "ms@solshark.me"
 
@@ -43,6 +45,11 @@ struct AboutView: View {
                     Text(Self.email)
                         .font(.callout)
                 }
+            }
+
+            if let onShowAcknowledgements {
+                Button("Acknowledgements") { onShowAcknowledgements() }
+                    .padding(.top, 4)
             }
         }
         .multilineTextAlignment(.center)

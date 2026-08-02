@@ -60,6 +60,7 @@ final class AppController {
     private let overlay = OverlayController()
     @ObservationIgnored private var settingsWindow: HostedWindowController<SettingsView>?
     @ObservationIgnored private var aboutWindow: HostedWindowController<AboutView>?
+    @ObservationIgnored private var acknowledgementsWindow: HostedWindowController<AcknowledgementsView>?
     private var tickTimer: Timer?
     private var silenceDetector: SilenceDetector?
 
@@ -80,11 +81,24 @@ final class AppController {
             aboutWindow = HostedWindowController(
                 title: "About Whisperoid",
                 diagnosticName: "about"
-            ) {
-                AboutView()
+            ) { [unowned self] in
+                AboutView(onShowAcknowledgements: { self.showAcknowledgements() })
             }
         }
         aboutWindow?.show()
+    }
+
+    func showAcknowledgements() {
+        if acknowledgementsWindow == nil {
+            acknowledgementsWindow = HostedWindowController(
+                title: "Acknowledgements",
+                diagnosticName: "acknowledgements",
+                isResizable: true
+            ) {
+                AcknowledgementsView()
+            }
+        }
+        acknowledgementsWindow?.show()
     }
 
     init() {
@@ -111,6 +125,12 @@ final class AppController {
             Task {
                 try? await Task.sleep(for: .milliseconds(800))
                 showSettings()
+            }
+        }
+        if environment["WHISPEROID_SHOW_ACKNOWLEDGEMENTS"] != nil {
+            Task {
+                try? await Task.sleep(for: .milliseconds(800))
+                showAcknowledgements()
             }
         }
         if environment["WHISPEROID_SHOW_ABOUT"] != nil {

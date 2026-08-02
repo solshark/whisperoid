@@ -67,6 +67,16 @@ else
 	echo "warning: Resources/Whisperoid.icns missing; the app will have no icon" >&2
 fi
 
+# MIT and Apache 2.0 both require their notices to accompany binary
+# distribution, so this has to be inside the bundle, not only in the repository.
+# Regenerate with scripts/make-notices.py.
+if [[ -f "$ROOT/Resources/THIRD-PARTY-NOTICES.txt" ]]; then
+	cp "$ROOT/Resources/THIRD-PARTY-NOTICES.txt" "$APP/Contents/Resources/THIRD-PARTY-NOTICES.txt"
+else
+	echo "error: Resources/THIRD-PARTY-NOTICES.txt missing; run scripts/make-notices.py" >&2
+	exit 1
+fi
+
 # SwiftPM emits dependency resources (e.g. KeyboardShortcuts localisations) as
 # sibling .bundle directories; they must travel with the app.
 #
