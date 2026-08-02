@@ -101,6 +101,32 @@ public final class Transcriber: @unchecked Sendable {
         pipe = value
     }
 
+    /// Core ML components that must be present for the model to be usable.
+    /// `TextDecoderContextPrefill` is deliberately excluded; not every variant
+    /// ships one.
+    private static let requiredComponents = ["AudioEncoder", "MelSpectrogram", "TextDecoder"]
+
+    /// Returns the model folder when it already holds a usable model.
+    ///
+    /// Checked against the actual Core ML payload inside each component rather
+    /// than mere directory existence, so a partial or interrupted download is
+    /// correctly treated as absent and fetched again.
+    public static func localModel(in storageDirectory: URL) -> URL? {
+        let folder = modelFolder(in: storageDirectory)
+        let manager = FileManager.default
+
+        guard manager.fileExists(atPath: folder.appendingPathComponent("config.json").path) else {
+            return nil
+        }
+        for component in requiredComponents {
+            let payload = folder
+                .appendingPathComponent("\(component).mlmodelc", isDirectory: true)
+                .appendingPathComponent("coremldata.bin")
+            guard manager.fileExists(atPath: payload.path) else { return nil }
+        }
+        return folder
+    }
+
     /// Where the model files are expected on disk, whether or not they exist.
     public static func modelFolder(in storageDirectory: URL) -> URL {
         storageDirectory
@@ -117,21 +143,30 @@ public final class Transcriber: @unchecked Sendable {
 
         onPhase(.locating)
 
-        // Downloading is done explicitly rather than letting the WhisperKit
-        // initialiser do it, so progress is observable and a stalled transfer
-        // can be told apart from model preparation.
-        let folder = try await WhisperKit.download(
-            variant: Self.modelVariant,
-            downloadBase: storageDirectory,
-            from: Self.modelRepository
-        ) { progress in
-            onPhase(
-                .downloading(
-                    fraction: progress.fractionCompleted,
-                    completedFiles: progress.completedUnitCount,
-                    totalFiles: progress.totalUnitCount
+        // Skip the network entirely when the model is already on disk. The
+        // download call reaches the remote API before it consults anything
+        // local, so without this the app cannot start while offline, or if the
+        // model host is unreachable, despite holding a complete copy.
+        let folder: URL
+        if let cached = Self.localModel(in: storageDirectory) {
+            folder = cached
+        } else {
+            // Downloading is done explicitly rather than letting the WhisperKit
+            // initialiser do it, so progress is observable and a stalled
+            // transfer can be told apart from model preparation.
+            folder = try await WhisperKit.download(
+                variant: Self.modelVariant,
+                downloadBase: storageDirectory,
+                from: Self.modelRepository
+            ) { progress in
+                onPhase(
+                    .downloading(
+                        fraction: progress.fractionCompleted,
+                        completedFiles: progress.completedUnitCount,
+                        totalFiles: progress.totalUnitCount
+                    )
                 )
-            )
+            }
         }
 
         onPhase(.preparing)
@@ -139,6 +174,11 @@ public final class Transcriber: @unchecked Sendable {
         let config = WhisperKitConfig(
             model: Self.modelVariant,
             modelFolder: folder.path,
+            // Without this the tokenizer resolves against HubApi's default,
+            // which is ~/Documents/huggingface. It would be downloaded again
+            // to a directory the app does not own, and would not be found
+            // locally on a machine that is offline.
+            tokenizerFolder: storageDirectory,
             verbose: false,
             logLevel: .error,
             prewarm: true,

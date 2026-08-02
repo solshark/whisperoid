@@ -15,3 +15,6 @@ build/
 
 # Distribution archives
 dist/
+
+# Local model backups (large, never committed)
+backup/

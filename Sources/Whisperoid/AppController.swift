@@ -159,6 +159,9 @@ final class AppController {
             let directory = try Paths.ensureSupportDirectory()
             Log.info("startup: variant=\(Transcriber.modelVariant) storage=\(directory.path)")
             Log.info("startup: model folder \(Transcriber.modelFolder(in: directory).path)")
+            Log.info(Transcriber.localModel(in: directory) != nil
+                ? "startup: model already on disk, skipping network"
+                : "startup: model not cached, will download")
 
             try await transcriber.load(storageDirectory: directory) { [weak self] phase in
                 Task { @MainActor in self?.apply(phase) }
