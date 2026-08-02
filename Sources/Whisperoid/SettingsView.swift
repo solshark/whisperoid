@@ -40,7 +40,7 @@ struct SettingsView: View {
                     }
                 }
 
-                caption("Discard is only active while recording. Press Escape to abandon a capture, Delete to clear a shortcut.")
+                caption("Discard is only active while recording. Press Escape to abandon a capture, Delete to clear a shortcut. Some combinations are taken by macOS before this window sees them and cannot be recorded by pressing them — ⌘⌃D, the default, opens Look Up. Restore Defaults sets bindings directly, so it always works.")
             }
 
             Section("Recording") {
