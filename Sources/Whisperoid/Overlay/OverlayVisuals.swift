@@ -55,6 +55,10 @@ struct WavesVisual: View {
     /// How long the ribbons take to come to rest once transcription finishes.
     private static let settleSeconds = 0.9
 
+    /// Traversals per second of the transcribing sweep. Deliberately unhurried:
+    /// at nearly one per second it read as agitated rather than working.
+    private static let sweepRate = 0.42
+
     var body: some View {
         TimelineView(.animation) { context in
             let now = context.date
@@ -79,7 +83,7 @@ struct WavesVisual: View {
             Canvas { canvas, size in
                 let midline = size.height / 2
                 // Sweeps left to right on repeat while transcribing.
-                let sweep = (time * 0.9).truncatingRemainder(dividingBy: 1)
+                let sweep = (time * Self.sweepRate).truncatingRemainder(dividingBy: 1)
 
                 for layer in 0..<Self.layers {
                     let ratio = Double(layer) / Double(Self.layers)
@@ -88,8 +92,14 @@ struct WavesVisual: View {
                     let frequency = 1.6 + ratio * 1.5
                     // Faster than a plain sine, and speech speeds it up further
                     // so the response is felt as well as seen. Settling slows.
-                    let settleEase = mode.isSettled ? 0.35 + settling * 0.65 : 1
-                    let speed = (1.7 + ratio * 1.1) * (1 + level * 0.9) * settleEase
+                    // Listening is lively, transcribing is calmer, settling
+                    // slows to a halt.
+                    let paceForMode: Double = switch mode {
+                    case .listening: 1
+                    case .working: 0.5
+                    case .settled: 0.35 + settling * 0.65
+                    }
+                    let speed = (1.7 + ratio * 1.1) * (1 + level * 0.9) * paceForMode
                     // Brightens as it comes to rest, so stillness reads as
                     // completion rather than as the animation having stopped.
                     let restGlow = mode.isSettled ? 0.55 + (1 - settling) * 0.45 : 0.55 + level * 0.45
@@ -110,7 +120,7 @@ struct WavesVisual: View {
                             // obviously being processed rather than listening.
                             let distance = abs(progress - sweep)
                             let band = exp(-pow(distance * 7, 2))
-                            displacement *= 0.25 + band * 2.6
+                            displacement *= 0.25 + band * 2.2
                         }
 
                         let y = midline + displacement * amplitude * envelope

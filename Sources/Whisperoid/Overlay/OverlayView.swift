@@ -14,9 +14,15 @@ struct OverlayView: View {
     let model: OverlayModel
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 16) {
+            // Fixed height, or the ribbons expand to fill the panel and push
+            // the caption onto the bottom edge — exactly where the elliptical
+            // backdrop has already faded to nothing, which is what made the
+            // numbers unreadable.
             WavesVisual(levels: model.levels, mode: mode)
+                .frame(height: 96)
             caption
+                .legibleOverAnything()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SoftBackdrop())
@@ -37,27 +43,27 @@ struct OverlayView: View {
         switch model.phase {
         case .recording:
             Text(Self.timestamp(model.elapsed))
-                .font(.system(size: 20, weight: .light, design: .rounded))
+                .font(.system(size: 23, weight: .light, design: .monospaced))
                 .monospacedDigit()
                 .tracking(3)
-                .foregroundStyle(.white.opacity(0.78))
+                .foregroundStyle(.white.opacity(0.92))
 
         case .transcribing:
             Text("TRANSCRIBING")
-                .font(.system(size: 13, weight: .light, design: .rounded))
+                .font(.system(size: 15, weight: .light, design: .monospaced))
                 .tracking(4)
-                .foregroundStyle(.white.opacity(0.7))
+                .foregroundStyle(.white.opacity(0.88))
 
         case .done:
             Text(doneSummary)
-                .font(.system(size: 15, weight: .light, design: .rounded))
+                .font(.system(size: 17, weight: .light, design: .monospaced))
                 .monospacedDigit()
                 .tracking(2)
-                .foregroundStyle(.white.opacity(0.82))
+                .foregroundStyle(.white.opacity(0.92))
 
         case .failed:
             Text(model.message)
-                .font(.system(size: 13, weight: .light, design: .rounded))
+                .font(.system(size: 13, weight: .light, design: .monospaced))
                 .foregroundStyle(.orange.opacity(0.95))
                 .multilineTextAlignment(.center)
                 .lineLimit(3)
@@ -76,6 +82,18 @@ struct OverlayView: View {
     }
 }
 
+private extension View {
+    /// Layered shadows standing in for a text outline, which SwiftUI has no
+    /// direct equivalent of. A tight dark shadow reads as a stroke and a wider
+    /// soft one lifts the glyphs off whatever is behind, so the caption stays
+    /// readable over a bright terminal as well as a dark desktop.
+    func legibleOverAnything() -> some View {
+        shadow(color: .black.opacity(0.95), radius: 1.5)
+            .shadow(color: .black.opacity(0.85), radius: 3)
+            .shadow(color: .black.opacity(0.55), radius: 9)
+    }
+}
+
 /// A soft pool of shade behind the overlay.
 ///
 /// Drawn as a SwiftUI gradient, not masked material. `NSVisualEffectView` is an
@@ -91,9 +109,9 @@ private struct SoftBackdrop: View {
     var body: some View {
         EllipticalGradient(
             stops: [
-                .init(color: .black.opacity(0.52), location: 0.0),
-                .init(color: .black.opacity(0.40), location: 0.35),
-                .init(color: .black.opacity(0.16), location: 0.70),
+                .init(color: .black.opacity(0.58), location: 0.0),
+                .init(color: .black.opacity(0.50), location: 0.40),
+                .init(color: .black.opacity(0.28), location: 0.72),
                 .init(color: .clear, location: 1.0),
             ],
             center: .center
