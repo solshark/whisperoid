@@ -58,12 +58,33 @@ final class AppController {
     private let transcriber = Transcriber()
     private let injector: any TextInjector = ClipboardInjector()
     private let overlay = OverlayController()
-    private let settingsWindow = SettingsWindowController()
+    @ObservationIgnored private var settingsWindow: HostedWindowController<SettingsView>?
+    @ObservationIgnored private var aboutWindow: HostedWindowController<AboutView>?
     private var tickTimer: Timer?
     private var silenceDetector: SilenceDetector?
 
     func showSettings() {
-        settingsWindow.show(controller: self)
+        if settingsWindow == nil {
+            settingsWindow = HostedWindowController(
+                title: "Whisperoid Settings",
+                diagnosticName: "settings"
+            ) { [unowned self] in
+                SettingsView(controller: self, preferences: self.preferences)
+            }
+        }
+        settingsWindow?.show()
+    }
+
+    func showAbout() {
+        if aboutWindow == nil {
+            aboutWindow = HostedWindowController(
+                title: "About Whisperoid",
+                diagnosticName: "about"
+            ) {
+                AboutView()
+            }
+        }
+        aboutWindow?.show()
     }
 
     init() {
@@ -83,12 +104,19 @@ final class AppController {
             Task { @MainActor in self?.handleAudioConfigurationChange() }
         }
 
-        // Diagnostic hook: opens preferences shortly after launch so the window
-        // can be verified without driving the menu bar.
-        if ProcessInfo.processInfo.environment["WHISPEROID_SHOW_SETTINGS"] != nil {
+        // Diagnostic hooks: open a window shortly after launch so it can be
+        // verified without driving the menu bar.
+        let environment = ProcessInfo.processInfo.environment
+        if environment["WHISPEROID_SHOW_SETTINGS"] != nil {
             Task {
                 try? await Task.sleep(for: .milliseconds(800))
                 showSettings()
+            }
+        }
+        if environment["WHISPEROID_SHOW_ABOUT"] != nil {
+            Task {
+                try? await Task.sleep(for: .milliseconds(800))
+                showAbout()
             }
         }
 

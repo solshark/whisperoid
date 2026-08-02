@@ -69,6 +69,10 @@ struct MenuContent: View {
             }
         }
 
+        Button("About Whisperoid") {
+            controller.showAbout()
+        }
+
         Button("Preferences…") {
             controller.showSettings()
         }
