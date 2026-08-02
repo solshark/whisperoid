@@ -6,6 +6,9 @@ import SwiftUI
 struct ShortcutRecorder: NSViewRepresentable {
 
     let name: HotkeyName
+    /// Bumped by the caller to force a refresh when the binding changes from
+    /// outside this view, such as Restore Defaults.
+    var revision: Int = 0
 
     func makeNSView(context: Context) -> ShortcutRecorderView {
         ShortcutRecorderView(name: name)
@@ -55,6 +58,8 @@ final class ShortcutRecorderView: NSButton {
         }
         window?.makeFirstResponder(self)
         isRecording = true
+        Log.info("recorder[\(name.key)]: capturing, current="
+            + "\(HotkeyCenter.shared.shortcut(for: name)?.description ?? "none")")
     }
 
     private func endRecording() {
@@ -90,6 +95,8 @@ final class ShortcutRecorderView: NSButton {
 
     private func handle(_ event: NSEvent) -> Bool {
         let bareModifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty
+        Log.info("recorder[\(name.key)]: event keyCode=\(event.keyCode) "
+            + "modifiers=\(event.modifierFlags.intersection(.deviceIndependentFlagsMask).rawValue)")
 
         // Escape abandons the capture; Delete clears the binding entirely.
         if event.keyCode == UInt16(kVK_Escape), bareModifiers {
@@ -102,18 +109,24 @@ final class ShortcutRecorderView: NSButton {
             return true
         }
 
-        guard let shortcut = Hotkey(event: event) else { return false }
+        guard let shortcut = Hotkey(event: event) else {
+            Log.info("recorder[\(name.key)]: rejected, not a key event")
+            return false
+        }
 
         guard shortcut.hasModifiers || name.allowsBareKey else {
             // An unmodified key registered globally would fire while typing.
+            Log.info("recorder[\(name.key)]: rejected \(shortcut.description), no modifiers")
             NSSound.beep()
             return true
         }
         guard !shortcut.isTakenBySystem else {
+            Log.info("recorder[\(name.key)]: rejected \(shortcut.description), reserved by macOS")
             NSSound.beep()
             return true
         }
 
+        Log.info("recorder[\(name.key)]: accepted \(shortcut.description)")
         HotkeyCenter.shared.setShortcut(shortcut, for: name)
         endRecording()
         return true

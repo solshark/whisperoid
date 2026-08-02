@@ -109,6 +109,8 @@ struct HotkeyName: Hashable, Sendable {
         allowsBareKey: true
     )
 
+    static let all: [HotkeyName] = [.toggleDictation, .cancelDictation]
+
     // Identity is the storage key alone; the other fields are fixed properties
     // of the action rather than part of what identifies it.
     static func == (lhs: HotkeyName, rhs: HotkeyName) -> Bool { lhs.key == rhs.key }
@@ -133,7 +135,20 @@ final class HotkeyCenter {
 
     /// Suspends every registered shortcut, used while recording a new one so
     /// that pressing an existing binding records it instead of triggering it.
-    var isEnabled = true
+    ///
+    /// This must actually unregister with Carbon, not merely gate the handler.
+    /// A registered hotkey is consumed system-wide before the application's key
+    /// equivalent dispatch runs, so leaving it registered makes it impossible to
+    /// record the shortcut that is already bound.
+    var isEnabled = true {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            Log.info("hotkey: \(isEnabled ? "resumed" : "suspended for recording")")
+            for identifier in Array(bindings.keys) {
+                applyRegistration(for: identifier)
+            }
+        }
+    }
 
     private struct Binding {
         let name: HotkeyName
@@ -203,6 +218,18 @@ final class HotkeyCenter {
         }
     }
 
+    /// Clears every stored override so the built-in shortcuts apply again.
+    func resetToDefaults() {
+        for name in HotkeyName.all {
+            defaults.removeObject(forKey: storageKey(name))
+            defaults.removeObject(forKey: clearedKey(name))
+        }
+        for identifier in Array(bindings.keys) {
+            applyRegistration(for: identifier)
+        }
+        Log.info("hotkey: restored defaults")
+    }
+
     // MARK: - Carbon plumbing
 
     private func identifier(for name: HotkeyName) -> UInt32 {
@@ -224,7 +251,7 @@ final class HotkeyCenter {
             binding.reference = nil
         }
 
-        if binding.isEnabled, let shortcut = shortcut(for: binding.name) {
+        if isEnabled, binding.isEnabled, let shortcut = shortcut(for: binding.name) {
             var reference: EventHotKeyRef?
             let hotKeyID = EventHotKeyID(signature: Self.signature, id: identifier)
             let status = RegisterEventHotKey(
@@ -237,8 +264,12 @@ final class HotkeyCenter {
             )
             if status == noErr {
                 binding.reference = reference
+                Log.info("hotkey: registered \(binding.name.key)=\(shortcut.description)")
             } else {
-                Log.error("hotkey: registration failed for \(binding.name.key) (status \(status))")
+                // -9878 is eventHotKeyExistsErr: another application already
+                // holds this combination system-wide.
+                Log.error("hotkey: FAILED to register \(binding.name.key)="
+                    + "\(shortcut.description) status=\(status)")
             }
         }
 

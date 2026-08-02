@@ -16,17 +16,30 @@ struct SettingsView: View {
     @Bindable var controller: AppController
     @Bindable var preferences: Preferences
 
+    /// Forces the recorders to re-read their titles after Restore Defaults,
+    /// which changes the bindings without going through the recorder.
+    @State private var shortcutRevision = 0
+
     var body: some View {
         Form {
             Section("Shortcuts") {
                 LabeledContent("Start and stop dictation") {
-                    ShortcutRecorder(name: .toggleDictation)
+                    ShortcutRecorder(name: .toggleDictation, revision: shortcutRevision)
                         .frame(width: 160, height: 24)
                 }
                 LabeledContent("Discard recording") {
-                    ShortcutRecorder(name: .cancelDictation)
+                    ShortcutRecorder(name: .cancelDictation, revision: shortcutRevision)
                         .frame(width: 160, height: 24)
                 }
+
+                HStack {
+                    Spacer()
+                    Button("Restore Defaults") {
+                        HotkeyCenter.shared.resetToDefaults()
+                        shortcutRevision += 1
+                    }
+                }
+
                 caption("Discard is only active while recording. Press Escape to abandon a capture, Delete to clear a shortcut.")
             }
 
