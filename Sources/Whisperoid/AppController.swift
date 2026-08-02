@@ -362,6 +362,17 @@ final class AppController {
 
     // MARK: - Launch at login
 
+    /// Settable projection so SwiftUI can bind through `@Bindable`.
+    ///
+    /// A hand-written `Binding(get:set:)` would capture this MainActor-isolated
+    /// object in closures stored in `Binding`'s nonisolated function type, which
+    /// makes the runtime verify isolation on every call — including from
+    /// SwiftUI's layout pass. That check crashed in 0.1.2.
+    var launchAtLogin: Bool {
+        get { launchAtLoginEnabled }
+        set { setLaunchAtLogin(newValue) }
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
             try LaunchAtLogin.set(enabled)

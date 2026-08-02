@@ -1,9 +1,20 @@
 import AppKit
 import SwiftUI
 
+/// All bindings here go through `@Bindable`, never a hand-written
+/// `Binding(get:set:)`.
+///
+/// `SettingsView` is inferred `@MainActor` through its `View` conformance, so a
+/// closure written here is MainActor-isolated. Storing one in `Binding`, whose
+/// getter and setter are nonisolated function types, makes the runtime verify
+/// isolation on every call. SwiftUI calls those getters from its layout pass,
+/// and in 0.1.2 that check faulted inside `SerialExecutor._isSameExecutor` and
+/// crashed the app. `@Bindable` builds bindings from key paths instead, so no
+/// such closure exists.
 struct SettingsView: View {
 
     @Bindable var controller: AppController
+    @Bindable var preferences: Preferences
 
     var body: some View {
         Form {
@@ -20,10 +31,7 @@ struct SettingsView: View {
             }
 
             Section("Recording") {
-                Toggle(
-                    "Stop automatically after a silence",
-                    isOn: binding(\.autoStopOnSilence)
-                )
+                Toggle("Stop automatically after a silence", isOn: $preferences.autoStopOnSilence)
 
                 // Kept visible and disabled rather than hidden: showing and
                 // hiding them changes the content height, and the window is
@@ -32,39 +40,33 @@ struct SettingsView: View {
                 Group {
                     LabeledContent("Silence before stopping") {
                         sliderRow(
-                            value: binding(\.silenceSeconds),
+                            value: $preferences.silenceSeconds,
                             range: Preferences.silenceRange,
                             step: 0.5,
-                            text: String(format: "%.1f s", controller.preferences.silenceSeconds)
+                            text: String(format: "%.1f s", preferences.silenceSeconds)
                         )
                     }
 
                     LabeledContent("Counts as silence below") {
                         sliderRow(
-                            value: binding(\.silenceDropDecibels),
+                            value: $preferences.silenceDropDecibels,
                             range: Preferences.dropRange,
                             step: 1,
-                            text: String(format: "%.0f dB", controller.preferences.silenceDropDecibels)
+                            text: String(format: "%.0f dB", preferences.silenceDropDecibels)
                         )
                     }
 
                     caption("Measured against your loudest speech, so it adapts to microphone gain. Lower stops sooner; past about 25 dB it may never stop. Recording always stops after \(Int(AppController.maximumRecordingSeconds / 60)) minutes.")
                 }
-                .disabled(!controller.preferences.autoStopOnSilence)
+                .disabled(!preferences.autoStopOnSilence)
             }
 
             Section("Feedback") {
-                Toggle("Play sounds", isOn: binding(\.playSounds))
+                Toggle("Play sounds", isOn: $preferences.playSounds)
             }
 
             Section("General") {
-                Toggle(
-                    "Open at login",
-                    isOn: Binding(
-                        get: { controller.launchAtLoginEnabled },
-                        set: { controller.setLaunchAtLogin($0) }
-                    )
-                )
+                Toggle("Open at login", isOn: $controller.launchAtLogin)
 
                 if let message = controller.launchAtLoginMessage {
                     Text(message)
@@ -86,15 +88,6 @@ struct SettingsView: View {
     }
 
     // MARK: - Building blocks
-
-    private func binding<Value>(
-        _ keyPath: ReferenceWritableKeyPath<Preferences, Value>
-    ) -> Binding<Value> {
-        Binding(
-            get: { controller.preferences[keyPath: keyPath] },
-            set: { controller.preferences[keyPath: keyPath] = $0 }
-        )
-    }
 
     private func sliderRow(
         value: Binding<Double>,

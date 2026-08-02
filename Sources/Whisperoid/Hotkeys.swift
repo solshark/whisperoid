@@ -137,7 +137,10 @@ final class HotkeyCenter {
 
     private struct Binding {
         let name: HotkeyName
-        var handler: () -> Void
+        // Explicitly MainActor. Storing a MainActor-isolated closure in a
+        // nonisolated function type makes the runtime verify isolation on every
+        // call, and that check is what crashed the settings window in 0.1.2.
+        var handler: @MainActor () -> Void
         var reference: EventHotKeyRef?
         var isEnabled: Bool
     }
@@ -156,7 +159,7 @@ final class HotkeyCenter {
 
     // MARK: - Registration
 
-    func onKeyUp(for name: HotkeyName, handler: @escaping () -> Void) {
+    func onKeyUp(for name: HotkeyName, handler: @escaping @MainActor () -> Void) {
         let identifier = identifier(for: name)
         bindings[identifier] = Binding(
             name: name,

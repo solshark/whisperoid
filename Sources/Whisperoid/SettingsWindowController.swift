@@ -84,7 +84,9 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private func existingWindow(for controller: AppController) -> NSWindow {
         if let window { return window }
 
-        let hosting = NSHostingController(rootView: SettingsView(controller: controller))
+        let hosting = NSHostingController(
+            rootView: SettingsView(controller: controller, preferences: controller.preferences)
+        )
         let created = NSWindow(contentViewController: hosting)
         created.title = "Whisperoid Settings"
         created.styleMask = [.titled, .closable]
