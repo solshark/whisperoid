@@ -329,8 +329,11 @@ Without that certificate the image still works, but the recipient must clear
 the quarantine flag once after dragging the app across:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/Whisperoid.app
+sudo xattr -dr com.apple.quarantine /Applications/Whisperoid.app
 ```
+
+Use `sudo`. The copy in `/Applications` is not necessarily owned by the account
+running the command, and the attribute is not removed without it.
 
 Send that command with the image rather than waiting to be asked for it. A
 recipient who skips it is not shown a signing or notarisation error: macOS

@@ -82,7 +82,7 @@ else
 	echo "NOT notarised. Gatekeeper will refuse to open this on another Mac."
 	echo "After dragging the app to Applications, the recipient runs once:"
 	echo
-	echo "    xattr -dr com.apple.quarantine /Applications/Whisperoid.app"
+	echo "    sudo xattr -dr com.apple.quarantine /Applications/Whisperoid.app"
 	echo
 	echo "To remove that step, create a Developer ID Application certificate,"
 	echo "store notarytool credentials with:"
