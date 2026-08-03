@@ -332,6 +332,13 @@ the quarantine flag once after dragging the app across:
 xattr -dr com.apple.quarantine /Applications/Whisperoid.app
 ```
 
+Send that command with the image rather than waiting to be asked for it. A
+recipient who skips it is not shown a signing or notarisation error: macOS
+reports the app as damaged or unverifiable and offers to move it to the Trash,
+which reads as a corrupt download or a broken build. The report that comes back
+will describe a fault in the application rather than the missing signature that
+actually caused it.
+
 If an Apple Development signature causes trouble on a machine other than the
 one that built it, an ad-hoc signature is a working alternative and carries the
 entitlements and hardened runtime correctly:
