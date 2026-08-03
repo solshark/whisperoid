@@ -14,6 +14,8 @@
 #   WHISPEROID_SIGN_IDENTITY   codesign identity (passed through to build-app.sh)
 #   WHISPEROID_NOTARY_PROFILE  notarytool keychain profile name; enables
 #                              notarisation and stapling when set
+#   WHISPEROID_SKIP_TESTS      skip the test gate; for iterating on packaging
+#                              itself, not for producing a release
 
 set -euo pipefail
 
@@ -21,6 +23,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/build/Whisperoid.app"
 DIST="$ROOT/dist"
 VOLUME="Whisperoid"
+
+# The tests gate the release. `set -e` is in force, so a failure here stops the
+# script before anything is built or signed, and no disk image is produced from
+# code that does not pass.
+if [[ -n "${WHISPEROID_SKIP_TESTS:-}" ]]; then
+	echo "warning: test gate skipped because WHISPEROID_SKIP_TESTS is set" >&2
+else
+	echo "==> running tests"
+	swift test --package-path "$ROOT"
+	echo
+fi
 
 "$ROOT/scripts/build-app.sh"
 

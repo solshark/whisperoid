@@ -27,5 +27,11 @@ let package = Package(
             name: "vadcheck",
             dependencies: ["WhisperoidCore"]
         ),
+        // Runs as a gate in scripts/package.sh: a release is not built from
+        // code that does not pass these.
+        .testTarget(
+            name: "WhisperoidCoreTests",
+            dependencies: ["WhisperoidCore"]
+        ),
     ]
 )

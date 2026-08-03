@@ -30,20 +30,47 @@ public final class AudioRecorder: @unchecked Sendable {
     private var samples: [Float] = []
     private var level: Float = 0
     private var levels: [Float] = []
-    private var converter: AVAudioConverter?
     private var isRunning = false
     private var configurationObserver: NSObjectProtocol?
+
+    /// Converter for the format the tap is currently delivering, together with
+    /// the format it was built for. Rebuilt whenever a buffer arrives in a
+    /// different format, which is the only reliable signal of what the hardware
+    /// is actually producing.
+    private var cachedConverter: AVAudioConverter?
+    private var cachedConverterFormat: AVAudioFormat?
 
     /// Called when the audio hardware configuration changes while recording,
     /// which happens when a device is connected, removed, or made the default.
     ///
-    /// The tap is installed with the input format that was current at `start()`.
-    /// Once the hardware changes, that format is no longer guaranteed to match,
-    /// and continuing would capture silence or malformed audio without any
-    /// indication that something went wrong.
+    /// Capture cannot meaningfully continue across the change, so the recording
+    /// is finished early rather than left running against hardware that may no
+    /// longer be delivering anything.
     public var onConfigurationChange: (@Sendable () -> Void)?
 
-    public init() {}
+    /// The observer is installed for the object's whole life, not only while
+    /// recording.
+    ///
+    /// A device change *between* recordings is the case that matters. The engine
+    /// caches the input node's format, and once the device behind it is gone
+    /// that cache describes hardware that no longer exists. Watching only during
+    /// capture left every such change unobserved, and the next `start()` then
+    /// worked from a stale format.
+    public init() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
+    }
+
+    deinit {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
+    }
 
     /// Most recent input level as RMS in 0...1, updated on every tap callback.
     public var currentLevel: Float {
@@ -76,35 +103,49 @@ public final class AudioRecorder: @unchecked Sendable {
         }
     }
 
+    /// The format every recording is converted to before it reaches Whisper.
+    static func makeTargetFormat() -> AVAudioFormat? {
+        AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: targetSampleRate,
+            channels: 1,
+            interleaved: false
+        )
+    }
+
     public func start() throws {
         guard !isRunning else { return }
+
+        guard let targetFormat = Self.makeTargetFormat() else {
+            throw RecorderError.engineFailed("could not build a 16 kHz mono format")
+        }
 
         lock.lock()
         samples.removeAll()
         levels.removeAll()
         level = 0
+        cachedConverter = nil
+        cachedConverterFormat = nil
         lock.unlock()
 
         let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
 
-        guard inputFormat.sampleRate > 0 else {
-            throw RecorderError.engineFailed("input device reported a zero sample rate")
-        }
-        guard let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Self.targetSampleRate,
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw RecorderError.engineFailed("could not build a 16 kHz mono format")
-        }
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw RecorderError.engineFailed("could not build a converter from \(inputFormat)")
-        }
-        self.converter = converter
+        // A tap left behind by an earlier failure makes `installTap` raise, so
+        // clear one before installing. Removing a tap that is not there does
+        // nothing and is safe.
+        input.removeTap(onBus: 0)
 
-        input.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { [weak self] buffer, _ in
+        // The format is deliberately nil, which means "whatever this bus is
+        // actually producing".
+        //
+        // Passing a format read from the node instead bakes in a value the
+        // engine has cached, and that cache goes stale the moment the input
+        // device changes. `installTap` then raises an Objective-C exception,
+        // which Swift cannot catch: it unwinds through Swift frames without
+        // running any cleanup and leaves the concurrency runtime inconsistent.
+        // The process survives, appears to do nothing, and then dies at the next
+        // main-actor isolation check somewhere entirely unrelated.
+        input.installTap(onBus: 0, bufferSize: 4_096, format: nil) { [weak self] buffer, _ in
             self?.appendConverted(buffer, to: targetFormat)
         }
 
@@ -113,16 +154,7 @@ public final class AudioRecorder: @unchecked Sendable {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            self.converter = nil
             throw RecorderError.engineFailed(error.localizedDescription)
-        }
-
-        configurationObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: .main
-        ) { [weak self] _ in
-            self?.onConfigurationChange?()
         }
 
         isRunning = true
@@ -133,21 +165,17 @@ public final class AudioRecorder: @unchecked Sendable {
     public func stop() -> [Float] {
         guard isRunning else { return [] }
 
-        if let configurationObserver {
-            NotificationCenter.default.removeObserver(configurationObserver)
-            self.configurationObserver = nil
-        }
-
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRunning = false
-        converter = nil
 
         lock.lock()
         let captured = samples
         samples.removeAll()
         levels.removeAll()
         level = 0
+        cachedConverter = nil
+        cachedConverterFormat = nil
         lock.unlock()
 
         return captured
@@ -158,8 +186,52 @@ public final class AudioRecorder: @unchecked Sendable {
         _ = stop()
     }
 
-    private func appendConverted(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat) {
-        guard let converter else { return }
+    /// Responds to a hardware configuration change.
+    ///
+    /// Whether recording or idle, the cached converter is dropped: it was built
+    /// for a format that is no longer guaranteed to be what the hardware
+    /// delivers. When idle the engine is also stopped, so the next `start()`
+    /// attaches to the device that is actually present rather than to whatever
+    /// was there when the engine last looked.
+    func handleConfigurationChange() {
+        lock.lock()
+        cachedConverter = nil
+        cachedConverterFormat = nil
+        lock.unlock()
+
+        if isRunning {
+            onConfigurationChange?()
+        } else {
+            engine.stop()
+        }
+    }
+
+    /// Returns a converter from `inputFormat`, building one if the format has
+    /// changed since the last buffer.
+    private func converter(
+        from inputFormat: AVAudioFormat,
+        to targetFormat: AVAudioFormat
+    ) -> AVAudioConverter? {
+        lock.lock()
+        if let existing = cachedConverter, cachedConverterFormat == inputFormat {
+            lock.unlock()
+            return existing
+        }
+        lock.unlock()
+
+        guard let made = AVAudioConverter(from: inputFormat, to: targetFormat) else { return nil }
+
+        lock.lock()
+        cachedConverter = made
+        cachedConverterFormat = inputFormat
+        lock.unlock()
+
+        return made
+    }
+
+    func appendConverted(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat) {
+        guard buffer.frameLength > 0 else { return }
+        guard let converter = converter(from: buffer.format, to: targetFormat) else { return }
 
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1_024
