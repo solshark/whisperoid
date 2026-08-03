@@ -12,9 +12,14 @@ final class OverlayController {
     private var panel: OverlayPanel?
     private var dismissTask: Task<Void, Never>?
 
+    /// Bumped whenever a pending dismissal is called off. A fade-out that is
+    /// already running cannot be cancelled, so its completion handler carries
+    /// the generation it started in and does nothing if the overlay has been
+    /// shown again since.
+    private var generation = 0
+
     func present(_ phase: OverlayModel.Phase) {
-        dismissTask?.cancel()
-        dismissTask = nil
+        cancelDismissal()
 
         setPhase(phase)
 
@@ -39,9 +44,15 @@ final class OverlayController {
             present(phase)
             return
         }
+        cancelDismissal()
+        setPhase(phase)
+    }
+
+    /// Calls off any pending dismissal, including a fade already in flight.
+    private func cancelDismissal() {
         dismissTask?.cancel()
         dismissTask = nil
-        setPhase(phase)
+        generation &+= 1
     }
 
     /// Records when the phase began so the ribbons can ease to rest from it.
@@ -51,7 +62,7 @@ final class OverlayController {
     }
 
     func dismiss(after seconds: Double) {
-        dismissTask?.cancel()
+        cancelDismissal()
         dismissTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(seconds))
             guard !Task.isCancelled else { return }
@@ -62,7 +73,28 @@ final class OverlayController {
     func hideImmediately() {
         dismissTask?.cancel()
         dismissTask = nil
-        panel?.orderOut(nil)
+        teardown()
+    }
+
+    /// Destroys the panel rather than merely ordering it out.
+    ///
+    /// `orderOut(_:)` leaves the hosting view and its SwiftUI graph alive, and
+    /// `TimelineView(.animation)` in the ribbons keeps asking for a frame on
+    /// every display cycle whether or not the window is on screen. A hidden
+    /// overlay therefore redrew at the refresh rate for as long as the app was
+    /// running: roughly a tenth of a core, permanently, drawing nothing anyone
+    /// could see.
+    ///
+    /// It also made the app far more likely to hit the Swift runtime fault in
+    /// `swift_task_isCurrentExecutor`, because the isolation check on the
+    /// TimelineView content closure ran millions of times a day while idle.
+    private func teardown() {
+        guard let panel else { return }
+        panel.orderOut(nil)
+        // Releases the SwiftUI view graph. Without this the hosting view
+        // survives inside the window and keeps its display link alive.
+        panel.contentView = nil
+        self.panel = nil
     }
 
     // MARK: - Panel lifecycle
@@ -97,13 +129,17 @@ final class OverlayController {
 
     private func fadeOut() {
         guard let panel, panel.isVisible else { return }
+        let generation = self.generation
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.35
             panel.animator().alphaValue = 0
-        } completionHandler: {
+        } completionHandler: { [weak self] in
             // Untyped AppKit callback: enter the actor rather than assert that
             // we are already on it.
-            Task { @MainActor in panel.orderOut(nil) }
+            Task { @MainActor in
+                guard let self, self.generation == generation else { return }
+                self.teardown()
+            }
         }
     }
 }
