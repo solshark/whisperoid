@@ -25,7 +25,8 @@ public final class AudioRecorder: @unchecked Sendable {
     /// How many recent level readings to retain for the waveform display.
     public static let levelHistoryLength = 48
 
-    private let engine = AVAudioEngine()
+    /// Replaced for every recording. See `renewEngine()`.
+    private var engine = AVAudioEngine()
     private let lock = NSLock()
     private var samples: [Float] = []
     private var level: Float = 0
@@ -48,15 +49,32 @@ public final class AudioRecorder: @unchecked Sendable {
     /// longer be delivering anything.
     public var onConfigurationChange: (@Sendable () -> Void)?
 
-    /// The observer is installed for the object's whole life, not only while
-    /// recording.
-    ///
-    /// A device change *between* recordings is the case that matters. The engine
-    /// caches the input node's format, and once the device behind it is gone
-    /// that cache describes hardware that no longer exists. Watching only during
-    /// capture left every such change unobserved, and the next `start()` then
-    /// worked from a stale format.
+    /// Counts handled configuration changes so tests can prove the observer is
+    /// attached to the engine currently in use.
+    private(set) var configurationChangesHandled = 0
+
+    /// Identifies the engine in use, so tests can prove `renewEngine()` really
+    /// replaced it rather than reconfiguring the old one.
+    var engineIdentity: ObjectIdentifier { ObjectIdentifier(engine) }
+
     public init() {
+        observeConfigurationChanges()
+    }
+
+    deinit {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
+    }
+
+    /// Attaches the configuration-change observer to the current engine.
+    ///
+    /// The notification is posted per engine instance, so this has to be redone
+    /// every time the engine is replaced or the new one is watched by nobody.
+    private func observeConfigurationChanges() {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
         configurationObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -66,10 +84,33 @@ public final class AudioRecorder: @unchecked Sendable {
         }
     }
 
-    deinit {
-        if let configurationObserver {
-            NotificationCenter.default.removeObserver(configurationObserver)
-        }
+    /// Posts the configuration-change notification for the engine currently in
+    /// use, so a test can verify the observer is attached to it. The real
+    /// notification comes from AVAudioEngine and cannot be provoked on demand.
+    func postConfigurationChangeForTesting() {
+        NotificationCenter.default.post(
+            name: .AVAudioEngineConfigurationChange,
+            object: engine
+        )
+    }
+
+    /// Discards the engine and builds a fresh one.
+    ///
+    /// AVAudioEngine reads the input hardware's format when it is created and
+    /// caches it. It announces later changes through
+    /// `AVAudioEngineConfigurationChange`, but only while it is *running*, so an
+    /// engine sitting idle between recordings is told nothing: a headset
+    /// connecting, a device disappearing, or a sleep and wake cycle all pass
+    /// unnoticed. The cached format then describes hardware that is no longer
+    /// there, and the next recording fails with -10868, formats don't match.
+    ///
+    /// Observing harder does not fix this because there is no notification to
+    /// observe. A new engine queries the hardware as it stands, which is the
+    /// only reliable answer, and building one costs microseconds.
+    func renewEngine() {
+        engine.stop()
+        engine = AVAudioEngine()
+        observeConfigurationChanges()
     }
 
     /// Most recent input level as RMS in 0...1, updated on every tap callback.
@@ -127,6 +168,10 @@ public final class AudioRecorder: @unchecked Sendable {
         cachedConverter = nil
         cachedConverterFormat = nil
         lock.unlock()
+
+        // Before anything else, so the format below is read from the hardware
+        // that is present now rather than whatever was there last time.
+        renewEngine()
 
         let input = engine.inputNode
 
@@ -194,6 +239,8 @@ public final class AudioRecorder: @unchecked Sendable {
     /// attaches to the device that is actually present rather than to whatever
     /// was there when the engine last looked.
     func handleConfigurationChange() {
+        configurationChangesHandled += 1
+
         lock.lock()
         cachedConverter = nil
         cachedConverterFormat = nil

@@ -150,6 +150,40 @@ struct AudioRecorderTests {
         #expect(recorder.recentLevels.count == AudioRecorder.levelHistoryLength)
     }
 
+    /// A long-lived engine caches the input hardware's format and is only told
+    /// about changes while it is running, so an engine that sat idle across a
+    /// sleep or a headset connecting holds a format for hardware that is no
+    /// longer there. The next recording then fails with -10868. Replacing the
+    /// engine is the only way to get a current answer.
+    @Test("Each recording gets a new engine rather than reusing a stale one")
+    func renewEngineReplacesTheEngine() {
+        let recorder = AudioRecorder()
+        let original = recorder.engineIdentity
+
+        recorder.renewEngine()
+
+        #expect(recorder.engineIdentity != original, "the engine was reused, so its cached format survives")
+    }
+
+    /// The observer is registered against a specific engine instance. Replacing
+    /// the engine without re-registering leaves the new one watched by nobody,
+    /// which is silent and would only show up as a recording that fails to end
+    /// itself when a device is unplugged.
+    @Test("The configuration observer follows the engine when it is replaced")
+    func observerFollowsRenewedEngine() async throws {
+        let recorder = AudioRecorder()
+        recorder.renewEngine()
+
+        let before = recorder.configurationChangesHandled
+        recorder.postConfigurationChangeForTesting()
+        try await Task.sleep(for: .milliseconds(200))
+
+        #expect(
+            recorder.configurationChangesHandled == before + 1,
+            "the replacement engine's configuration changes reach nobody"
+        )
+    }
+
     @Test("Stopping returns the captured audio and clears the buffer")
     func stopClearsState() {
         let recorder = AudioRecorder()
