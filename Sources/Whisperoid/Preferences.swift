@@ -12,6 +12,8 @@ final class Preferences {
         static let autoStopOnSilence = "autoStopOnSilence"
         static let silenceSeconds = "silenceSeconds"
         static let silenceDropDecibels = "silenceDropDecibels"
+        static let cleanupMode = "cleanupMode"
+        static let cleanupGlossary = "cleanupGlossary"
     }
 
     static let silenceRange: ClosedRange<Double> = 1.5...10.0
@@ -54,11 +56,39 @@ final class Preferences {
         }
     }
 
+    /// Post-processing applied to a transcript before it is injected.
+    ///
+    /// Off by default. Both alternatives can alter what the speaker said, so
+    /// neither is turned on for anyone who has not chosen it deliberately.
+    var cleanupMode: CleanupMode {
+        didSet { defaults.set(cleanupMode.rawValue, forKey: Key.cleanupMode) }
+    }
+
+    /// Terms the model should recognise, one per line.
+    ///
+    /// Exposed because measurement showed the glossary, not the model, is what
+    /// makes the model mode work: with no glossary every model tested fixed one
+    /// defect in six. Evaluating the feature without being able to edit this
+    /// would be evaluating the wrong thing.
+    var cleanupGlossary: String {
+        didSet { defaults.set(cleanupGlossary, forKey: Key.cleanupGlossary) }
+    }
+
+    var glossaryTerms: [String] {
+        cleanupGlossary
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [
             Key.playSounds: true,
             Key.autoStopOnSilence: true,
+            Key.cleanupMode: CleanupMode.off.rawValue,
+            Key.cleanupGlossary: ModelCleaner.Configuration.defaultGlossary
+                .joined(separator: "\n"),
             // Measured gaps within continuous speech reach 1.9 s, so 3 s leaves
             // little margin. Auto-stop is a safety net rather than the primary
             // way to finish, so a longer wait costs nothing.
@@ -69,5 +99,7 @@ final class Preferences {
         autoStopOnSilence = defaults.bool(forKey: Key.autoStopOnSilence)
         silenceSeconds = defaults.double(forKey: Key.silenceSeconds)
         silenceDropDecibels = defaults.double(forKey: Key.silenceDropDecibels)
+        cleanupMode = CleanupMode(rawValue: defaults.string(forKey: Key.cleanupMode) ?? "") ?? .off
+        cleanupGlossary = defaults.string(forKey: Key.cleanupGlossary) ?? ""
     }
 }

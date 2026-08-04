@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WhisperoidCore
 
 /// All bindings here go through `@Bindable`, never a hand-written
 /// `Binding(get:set:)`.
@@ -72,6 +73,36 @@ struct SettingsView: View {
                     caption("Measured against your loudest speech, so it adapts to microphone gain. Lower stops sooner; past about 25 dB it may never stop. Recording always stops after \(Int(AppController.maximumRecordingSeconds / 60)) minutes.")
                 }
                 .disabled(!preferences.autoStopOnSilence)
+            }
+
+            Section("Cleanup") {
+                Picker("Correct the transcript", selection: $preferences.cleanupMode) {
+                    ForEach(CleanupMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+
+                caption("Spelling uses the macOS spelling service, costs nothing and works offline, but only ever splits a run-together word or changes its case — it will not touch technical vocabulary. The language model can also correct misheard product names, but needs Ollama running locally with the gemma3:4b model, and holds about 4 GB of memory while it works. If it is unavailable the transcript is used unchanged.")
+
+                // Visible and disabled rather than hidden, for the same reason
+                // as the silence controls above: the window is sized to its
+                // content when it is created.
+                Group {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Terms to recognise, one per line")
+                            .font(.callout)
+                        TextEditor(text: $preferences.cleanupGlossary)
+                            .font(.body.monospaced())
+                            .frame(height: 92)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(.separator)
+                            )
+                    }
+
+                    caption("This list is what makes the model mode work: without it the models tested corrected roughly one defect in six, and with it four to six. Listing a term once is enough — the model matches mishearings and transliterations of it, so Colima also catches Kolyma and Колема. Do not list two spellings of the same thing.")
+                }
+                .disabled(preferences.cleanupMode != .model)
             }
 
             Section("Feedback") {

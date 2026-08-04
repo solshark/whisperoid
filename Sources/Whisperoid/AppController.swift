@@ -8,6 +8,11 @@ struct Transcription: Identifiable, Sendable {
     let text: String
     let language: String
     let duration: TimeInterval
+    /// What the transcriber produced before cleanup, when cleanup changed it.
+    /// Kept so a cleanup can be judged against what it replaced instead of
+    /// being taken on trust.
+    var originalText: String?
+    var cleanupSeconds: TimeInterval?
 }
 
 /// Owns the dictation state machine and wires the hotkeys and overlay to it.
@@ -357,10 +362,12 @@ final class AppController {
                     return
                 }
 
-                try injector.inject(output.text)
-                record(output)
+                let cleaned = await cleanup(output)
 
-                overlay.model.text = output.text
+                try injector.inject(cleaned.text)
+                record(output, cleaned: cleaned)
+
+                overlay.model.text = cleaned.text
                 overlay.model.language = output.language
                 overlay.model.duration = output.duration
                 overlay.update(.done)
@@ -375,12 +382,46 @@ final class AppController {
         }
     }
 
-    private func record(_ output: Transcriber.Output) {
+    /// Runs the configured post-processing over a transcript.
+    ///
+    /// Never throws. A cleanup that fails, times out, or has no server to talk
+    /// to returns the transcript untouched: the user has already spoken, and
+    /// losing that to an optional convenience would be a far worse bug than any
+    /// defect cleanup was meant to fix.
+    private func cleanup(_ output: Transcriber.Output) async -> CleanupResult {
+        switch preferences.cleanupMode {
+        case .off:
+            return .untouched(output.text)
+
+        case .spelling:
+            return SpellingCleaner().clean(output.text, language: output.language)
+
+        case .model:
+            let configuration = ModelCleaner.Configuration(
+                glossary: preferences.glossaryTerms
+            )
+            do {
+                let result = try await ModelCleaner(configuration: configuration)
+                    .clean(output.text)
+                if !result.rejected.isEmpty {
+                    Log.info("Cleanup rejected: \(result.rejected.joined(separator: "; "))")
+                }
+                return result
+            } catch {
+                Log.error("Cleanup unavailable: \(error.localizedDescription)")
+                return .untouched(output.text, mode: .model)
+            }
+        }
+    }
+
+    private func record(_ output: Transcriber.Output, cleaned: CleanupResult) {
         history.insert(
             Transcription(
-                text: output.text,
+                text: cleaned.text,
                 language: output.language,
-                duration: output.duration
+                duration: output.duration,
+                originalText: cleaned.changed ? cleaned.original : nil,
+                cleanupSeconds: cleaned.changed ? cleaned.duration : nil
             ),
             at: 0
         )
