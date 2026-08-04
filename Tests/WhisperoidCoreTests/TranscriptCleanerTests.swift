@@ -171,36 +171,45 @@ struct VocabularyGuardTests {
     }
 }
 
-struct ModelCleanerParsingTests {
+struct ModelOutputTests {
 
     @Test("The reply is read out of the corrected tags")
     func extractsTaggedReply() {
-        #expect(ModelCleaner.extract("<corrected>Hello there.</corrected>") == "Hello there.")
+        #expect(ModelOutput.extract("<corrected>Hello there.</corrected>") == "Hello there.")
     }
 
     @Test("An unclosed tag is still parsed")
     func extractsUnclosedReply() {
         // Smaller models routinely open the tag and never close it. Without
         // this the literal "<corrected>" ends up injected into the user's text.
-        #expect(ModelCleaner.extract("<corrected>\nHello there.") == "Hello there.")
+        #expect(ModelOutput.extract("<corrected>\nHello there.") == "Hello there.")
     }
 
     @Test("A reply with no tags at all is taken as-is")
     func extractsUntaggedReply() {
-        #expect(ModelCleaner.extract("  Hello there.  ") == "Hello there.")
+        #expect(ModelOutput.extract("  Hello there.  ") == "Hello there.")
+    }
+
+    @Test("Markdown emphasis the model invents is stripped")
+    func stripsMarkdown() {
+        // Observed in real dictation: "stop Ollama service" came back as
+        // "stop **Ollama** service". The vocabulary guard cannot catch it,
+        // because the word survives and only the punctuation around it is new.
+        #expect(ModelOutput.normalise("stop **Ollama** service") == "stop Ollama service")
+        #expect(ModelOutput.normalise("a *really* good idea") == "a really good idea")
     }
 
     @Test("Curly quotes are converted back to straight ones")
     func normalisesQuotes() {
         // gemma3:4b substitutes these unasked. Dictated text lands in editors
         // and terminals, where a curly apostrophe is a syntax error.
-        #expect(ModelCleaner.normalise("Let\u{2019}s go") == "Let's go")
-        #expect(ModelCleaner.normalise("\u{201C}quoted\u{201D}") == "\"quoted\"")
+        #expect(ModelOutput.normalise("Let\u{2019}s go") == "Let's go")
+        #expect(ModelOutput.normalise("\u{201C}quoted\u{201D}") == "\"quoted\"")
     }
 
     @Test("The glossary reaches the prompt")
     func includesGlossary() {
-        let prompt = ModelCleaner.prompt(for: "test", glossary: ["Colima", "Postgres"])
+        let prompt = EmbeddedCleaner.prompt(for: "test", glossary: ["Colima", "Postgres"])
         #expect(prompt.contains("Colima, Postgres"))
         #expect(prompt.contains("<text>\ntest\n</text>"))
     }

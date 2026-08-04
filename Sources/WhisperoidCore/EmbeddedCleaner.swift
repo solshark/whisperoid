@@ -62,7 +62,7 @@ public actor EmbeddedCleaner {
         public var maximumTokens: Int
 
         public init(
-            glossary: [String] = ModelCleaner.Configuration.defaultGlossary,
+            glossary: [String] = ModelOutput.defaultGlossary,
             maximumTokens: Int = 600
         ) {
             self.glossary = glossary
@@ -147,12 +147,12 @@ public actor EmbeddedCleaner {
             to: Self.prompt(for: text, glossary: configuration.glossary)
         )
 
-        let candidate = ModelCleaner.extract(reply)
+        let candidate = ModelOutput.extract(reply)
         guard !candidate.isEmpty else { throw CleanerError.emptyReply }
 
         let guarded = VocabularyGuard.check(
             original: text,
-            candidate: ModelCleaner.normalise(candidate),
+            candidate: ModelOutput.normalise(candidate),
             glossary: configuration.glossary
         )
 
@@ -177,6 +177,8 @@ public actor EmbeddedCleaner {
         - Fix words that were clearly misheard by the speech-to-text system.
         - Do NOT rephrase. Do NOT expand abbreviations or product names.
         - Do NOT add, remove or reorder any content.
+        - Output plain text only. Never use markdown: no asterisks, no bold, no
+          italics, no backticks, no headings, no lists.
         - Reply in the same language as the input.
         - If nothing is wrong, repeat the text unchanged.
 

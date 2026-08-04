@@ -51,6 +51,10 @@ final class AppController {
     private(set) var launchAtLoginMessage: String?
 
     private(set) var loadPhase: Transcriber.Phase = .locating
+    /// Progress of the optional cleanup model, shown in Settings. Its first
+    /// load downloads several gigabytes, which must be visible rather than
+    /// looking like the app has hung.
+    private(set) var cleanupPhase: EmbeddedCleaner.Phase = .idle
     private(set) var lastErrorText: String?
     private var phaseChangedAt = Date()
     private var loggedDownloadPercent = -1
@@ -68,6 +72,10 @@ final class AppController {
     @ObservationIgnored private var acknowledgementsWindow: HostedWindowController<AcknowledgementsView>?
     private var tickTimer: Timer?
     private var silenceDetector: SilenceDetector?
+    /// Nil only when the support directory cannot be created, in which case
+    /// cleanup is unavailable and dictation continues without it.
+    private let embeddedCleaner: EmbeddedCleaner?
+    @ObservationIgnored private var cleanupUnloadTimer: Timer?
 
     func showSettings() {
         if settingsWindow == nil {
@@ -107,6 +115,10 @@ final class AppController {
     }
 
     init() {
+        embeddedCleaner = (try? Paths.ensureSupportDirectory()).map {
+            EmbeddedCleaner(storageDirectory: $0)
+        }
+
         HotkeyCenter.shared.onKeyUp(for: .toggleDictation) { [weak self] in
             self?.toggle()
         }
@@ -175,6 +187,12 @@ final class AppController {
             Log.info(String(format: "startup: ready in %.2f s", Date().timeIntervalSince(started)))
             lastErrorText = nil
             state = .idle
+
+            // Warm the cleanup model when it is already the chosen mode, so the
+            // first dictation of a session is not the one that pays for the
+            // load. The idle timer starts with it, so an unused model does not
+            // sit on several gigabytes indefinitely.
+            prepareCleanupModel()
         } catch {
             let elapsed = Date().timeIntervalSince(started)
             Log.error(String(format: "startup: failed after %.2f s during %@: %@",
@@ -406,17 +424,78 @@ final class AppController {
             return result
 
         case .model:
-            let configuration = ModelCleaner.Configuration(
-                glossary: preferences.glossaryTerms
-            )
+            guard let cleaner = embeddedCleaner else {
+                return .untouched(output.text, mode: .model)
+            }
             do {
-                let result = try await ModelCleaner(configuration: configuration)
-                    .clean(output.text)
+                // Loads on demand. The first call after choosing this mode may
+                // download several gigabytes, which is why the phase is
+                // published rather than silently awaited.
+                try await loadCleanupModel()
+                let result = try await cleaner.clean(
+                    output.text,
+                    configuration: .init(glossary: preferences.glossaryTerms)
+                )
                 report(result)
+                scheduleCleanupUnload()
                 return result
             } catch {
                 Log.error("Cleanup unavailable: \(error.localizedDescription)")
                 return .untouched(output.text, mode: .model)
+            }
+        }
+    }
+
+    // MARK: - Cleanup model
+
+    /// Loads the cleanup model, publishing progress as it goes.
+    ///
+    /// Cheap once loaded, so callers need not track whether it has run.
+    func loadCleanupModel() async throws {
+        guard let cleaner = embeddedCleaner else { return }
+        cleanupUnloadTimer?.invalidate()
+        try await cleaner.load { [weak self] phase in
+            Task { @MainActor in self?.cleanupPhase = phase }
+        }
+    }
+
+    /// Called when the user picks a cleanup mode, so a multi-gigabyte download
+    /// starts while Settings is open rather than in the middle of a dictation.
+    func prepareCleanupModel() {
+        guard preferences.cleanupMode == .model else { return }
+        Task {
+            let started = Date()
+            do {
+                try await loadCleanupModel()
+                Log.info(String(format: "cleanup model ready in %.2f s",
+                                Date().timeIntervalSince(started)))
+                scheduleCleanupUnload()
+            } catch {
+                Log.error("cleanup model failed to load: \(error.localizedDescription)")
+                cleanupPhase = .idle
+            }
+        }
+    }
+
+    /// Drops the model after a period of inactivity.
+    ///
+    /// It occupies roughly 3.5 GB and reloads from a warm cache in about three
+    /// seconds, so a machine doing other work is better off without it between
+    /// dictation sessions.
+    func scheduleCleanupUnload() {
+        cleanupUnloadTimer?.invalidate()
+        let minutes = preferences.cleanupIdleUnloadMinutes
+        guard minutes > 0 else { return }
+
+        cleanupUnloadTimer = Timer.scheduledTimer(
+            withTimeInterval: TimeInterval(minutes) * 60,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let cleaner = self.embeddedCleaner else { return }
+                await cleaner.unload()
+                self.cleanupPhase = .idle
+                Log.info("cleanup model unloaded after \(minutes) min idle")
             }
         }
     }

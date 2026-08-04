@@ -44,13 +44,53 @@ default_identity() {
 
 IDENTITY="${WHISPEROID_SIGN_IDENTITY:-$(default_identity)}"
 
-swift build -c "$CONFIG" --package-path "$ROOT"
+# Built with xcodebuild rather than `swift build`.
+#
+# MLX, which runs the optional transcript cleanup, ships Metal shaders. SwiftPM
+# on the command line cannot compile Metal at all, so a `swift build` product
+# links and launches but dies on first use with "Failed to load the default
+# metallib". xcodebuild drives this package directly — there is no .xcodeproj —
+# and produces the shaders.
+#
+# -skipPackagePluginValidation is required because mlx-swift ships a CudaBuild
+# plugin, and Xcode refuses to run package plugins unattended without it.
+#
+# `swift build` still works and is what the test suite runs under; it simply
+# cannot produce a shippable app.
+case "$CONFIG" in
+	release) XCCONFIG="Release" ;;
+	debug) XCCONFIG="Debug" ;;
+	*) echo "error: CONFIG must be release or debug, got '$CONFIG'" >&2; exit 1 ;;
+esac
 
-BIN_DIR="$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)"
+DERIVED="$ROOT/.build/xcode"
+
+xcodebuild build \
+	-scheme Whisperoid \
+	-destination 'platform=macOS' \
+	-derivedDataPath "$DERIVED" \
+	-configuration "$XCCONFIG" \
+	-skipPackagePluginValidation \
+	-skipMacroValidation \
+	>/dev/null
+
+BIN_DIR="$DERIVED/Build/Products/$XCCONFIG"
 BIN="$BIN_DIR/Whisperoid"
 
 if [[ ! -x "$BIN" ]]; then
 	echo "error: built binary not found at $BIN" >&2
+	exit 1
+fi
+
+# MLX finds its Metal shaders by walking the loaded bundles and looking for
+# mlx-swift_Cmlx.bundle inside each one's Resources directory. The generic
+# .bundle copy below therefore places it correctly, and nothing further is
+# needed — but if the shaders were never compiled the app builds happily and
+# only fails at the moment the user first tries cleanup, so it is checked here.
+METALLIB="$BIN_DIR/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+if [[ ! -f "$METALLIB" ]]; then
+	echo "error: MLX Metal library not found at $METALLIB" >&2
+	echo "       install the Metal compiler with: xcodebuild -downloadComponent MetalToolchain" >&2
 	exit 1
 fi
 

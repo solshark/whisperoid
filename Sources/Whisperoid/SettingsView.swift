@@ -122,7 +122,24 @@ struct SettingsView: View {
                     }
                 }
 
-                caption("Spelling uses the macOS spelling service, costs nothing and works offline, but only ever splits a run-together word, changes its case or restores an accent — it will not touch technical vocabulary. The language model can also correct misheard product names, but needs Ollama running locally with the gemma3:4b model, and holds about 4 GB of memory while it works. If it is unavailable the transcript is used unchanged.")
+                caption("Spelling uses the macOS spelling service, costs nothing and works offline, but only ever splits a run-together word, changes its case or restores an accent — it will not touch technical vocabulary. The language model also corrects misheard product names, in both English and Russian. It downloads about 3.5 GB the first time it is selected and holds that memory only while it is in use. If it cannot load, the transcript is used unchanged.")
+
+                Group {
+                    LabeledContent("Model") {
+                        Text(controller.cleanupPhase.description)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Picker("Release memory when idle",
+                           selection: $preferences.cleanupIdleUnloadMinutes) {
+                        ForEach(Preferences.unloadChoices, id: \.self) { minutes in
+                            Text(Preferences.unloadTitle(minutes)).tag(minutes)
+                        }
+                    }
+
+                    caption("The model occupies roughly 3.5 GB while loaded and takes about three seconds to load again from disk, so releasing it between dictation sessions costs little on a busy machine.")
+                }
+                .disabled(preferences.cleanupMode != .model)
 
                 Group {
                     VStack(alignment: .leading, spacing: 4) {
@@ -140,6 +157,9 @@ struct SettingsView: View {
                     caption("This list is what makes the model mode work: without it the models tested corrected roughly one defect in six, and with it four to six. Listing a term once is enough — the model matches mishearings and transliterations of it, so Colima also catches Kolyma and Колема. Do not list two spellings of the same thing.")
                 }
                 .disabled(preferences.cleanupMode != .model)
+                // Starts the first download while Settings is open, rather than
+                // in the middle of the next dictation.
+                .onChange(of: preferences.cleanupMode) { controller.prepareCleanupModel() }
             }
 
             Section {

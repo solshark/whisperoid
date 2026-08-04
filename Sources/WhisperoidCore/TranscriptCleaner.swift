@@ -6,9 +6,9 @@ import AppKit
 
 /// How a transcript is post-processed before it is injected.
 ///
-/// This is an evaluation feature. Both cleanup modes are off by default and the
-/// model mode depends on a local Ollama server that is not shipped with the
-/// app, so a user who never opens Settings is unaffected by any of it.
+/// Both modes are off by default, and the model mode downloads several
+/// gigabytes the first time it is chosen, so a user who never opens Settings is
+/// unaffected by any of it.
 public enum CleanupMode: String, CaseIterable, Sendable, Identifiable {
     case off
     case spelling
@@ -160,182 +160,67 @@ public struct SpellingCleaner: Sendable {
     #endif
 }
 
-// MARK: - Language model
+// MARK: - Model output
 
-/// Corrects a transcript with a local language model served by Ollama.
+/// Shared handling of a language model's reply.
 ///
-/// Experimental and deliberately not self-contained: it talks to a server the
-/// user installs separately. Shipping this would require in-process inference,
-/// and that decision is not made yet — this exists so the two approaches can be
-/// compared in real use rather than on invented sentences.
-///
-/// Measured with `gemma3:4b` on 2026-08-04: 4 of 6 defects fixed, no damage,
-/// 1.4 s warm, 2.1 s from cold, 4.3 GB resident while loaded.
-public struct ModelCleaner: Sendable {
+/// Kept apart from the model that produced it: the parsing and the repairs
+/// below are properties of what these models do to text, not of how they are
+/// hosted. They outlived an earlier Ollama-backed cleaner and would outlive
+/// this one.
+public enum ModelOutput {
 
-    public struct Configuration: Sendable {
-        public var endpoint: URL
-        public var model: String
-        public var glossary: [String]
-        public var timeout: TimeInterval
-        /// How long Ollama keeps the model in memory after a request. Short by
-        /// default so 4.3 GB is held during a dictation session and released
-        /// afterwards rather than sitting resident all day.
-        public var keepAlive: String
-
-        public init(
-            endpoint: URL = URL(string: "http://127.0.0.1:11434/api/chat")!,
-            model: String = "gemma3:4b",
-            glossary: [String] = Configuration.defaultGlossary,
-            timeout: TimeInterval = 20,
-            keepAlive: String = "2m"
-        ) {
-            self.endpoint = endpoint
-            self.model = model
-            self.glossary = glossary
-            self.timeout = timeout
-            self.keepAlive = keepAlive
-        }
-
-        /// Without a glossary every model tested scored 1 fix in 6; with one the
-        /// best scored 4 to 6. The model is not recalling this vocabulary, it is
-        /// matching against the list — so the list, not the model, is what makes
-        /// this mode work. List one spelling per term: an early version offered
-        /// both `Postgres` and `PostgreSQL` and the models read that as an
-        /// instruction to swap one for the other.
-        public static let defaultGlossary = [
-            "Colima", "Claude Code", "Postgres", "WhisperKit", "MLX", "Whisperoid",
-            "Ollama", "Gemma", "Qwen", "Docker", "Prezentor", "GitLab", "Core ML",
-            "Swift", "Xcode", "MinIO", "Celery", "Redis", "Kubernetes", "Homebrew",
-        ]
-    }
-
-    public enum CleanerError: LocalizedError {
-        case unavailable
-        case emptyReply
-
-        public var errorDescription: String? {
-            switch self {
-            case .unavailable: "The local model server did not respond."
-            case .emptyReply: "The local model returned nothing."
-            }
-        }
-    }
-
-    public let configuration: Configuration
-    private let session: URLSession
-
-    public init(configuration: Configuration = Configuration()) {
-        self.configuration = configuration
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = configuration.timeout
-        self.session = URLSession(configuration: config)
-    }
-
-    static func prompt(for text: String, glossary: [String]) -> String {
-        """
-        Correct the speech-to-text transcript inside the <text> tags.
-
-        Rules:
-        - Fix missing spaces, missing or wrong punctuation, and wrong capitalisation.
-        - Fix words that were clearly misheard by the speech-to-text system.
-        - Do NOT rephrase. Do NOT expand abbreviations or product names.
-        - Do NOT add, remove or reorder any content.
-        - Reply in the same language as the input.
-        - If nothing is wrong, repeat the text unchanged.
-
-        The transcript may render these terms phonetically, including \
-        transliterated into a different alphabet — a Latin product name written \
-        in Cyrillic, for example. Restore the term to the exact spelling listed \
-        below, in its original alphabet, regardless of the language of the \
-        surrounding sentence:
-        \(glossary.joined(separator: ", "))
-
-        <text>
-        \(text)
-        </text>
-
-        Put the corrected transcript inside <corrected> tags. Output nothing else.
-        """
-    }
-
-    public func clean(_ text: String) async throws -> CleanupResult {
-        let started = Date()
-        var request = URLRequest(url: configuration.endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": configuration.model,
-            "messages": [["role": "user",
-                          "content": Self.prompt(for: text, glossary: configuration.glossary)]],
-            "stream": false,
-            "think": false,
-            "keep_alive": configuration.keepAlive,
-            // 2048 covers a dictation turn. Raising it does not improve results
-            // and does increase what Ollama reserves.
-            "options": ["temperature": 0.0, "num_predict": 2048, "num_ctx": 2048],
-        ])
-
-        let data: Data
-        do {
-            (data, _) = try await session.data(for: request)
-        } catch {
-            throw CleanerError.unavailable
-        }
-
-        guard
-            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let message = payload["message"] as? [String: Any],
-            let content = message["content"] as? String
-        else {
-            throw CleanerError.emptyReply
-        }
-
-        let candidate = Self.extract(content)
-        guard !candidate.isEmpty else { throw CleanerError.emptyReply }
-
-        let guarded = VocabularyGuard.check(
-            original: text,
-            candidate: Self.normalise(candidate),
-            glossary: configuration.glossary
-        )
-
-        return CleanupResult(
-            text: guarded.accepted ? guarded.text : text,
-            original: text,
-            mode: .model,
-            duration: Date().timeIntervalSince(started),
-            rejected: guarded.reasons
-        )
-    }
+    /// Terms the model should recognise.
+    ///
+    /// Without a glossary every model tested corrected roughly one defect in
+    /// six; with one, four to six. The model is not recalling this vocabulary,
+    /// it is matching against the list, so the list is what makes the feature
+    /// work. List one spelling per term: an early version offered both
+    /// `Postgres` and `PostgreSQL`, and the models read that as an instruction
+    /// to swap one for the other.
+    public static let defaultGlossary = [
+        "Colima", "Claude Code", "Postgres", "WhisperKit", "MLX", "Whisperoid",
+        "Gemma", "Docker", "Prezentor", "GitLab", "Core ML", "Swift", "Xcode",
+        "MinIO", "Celery", "Redis", "Kubernetes", "Homebrew",
+    ]
 
     /// Pulls the reply out of the `<corrected>` tags the prompt asks for.
     /// Smaller models routinely open the tag and never close it.
-    static func extract(_ raw: String) -> String {
+    public static func extract(_ raw: String) -> String {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if let open = text.range(of: "<corrected>", options: .caseInsensitive) {
             let rest = text[open.upperBound...]
             if let close = rest.range(of: "</corrected>", options: .caseInsensitive) {
-                return String(rest[..<close.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                return String(rest[..<close.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
             }
             return String(rest).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         return text
     }
 
-    /// Undoes typographic substitutions the model makes unasked.
+    /// Undoes formatting the model applies unasked.
     ///
-    /// `gemma3:1b` and `gemma3:4b` both replace `'` with `’`. Dictated text is
-    /// routinely typed into editors and terminals, where a curly apostrophe is
-    /// a syntax error rather than a nicety.
-    static func normalise(_ text: String) -> String {
+    /// Two observed habits, both destructive for dictation. The models replace
+    /// `'` with a curly apostrophe, which is a syntax error in the editors and
+    /// terminals this text is typed into. They also emphasise words they
+    /// consider significant, turning "stop Ollama service" into markdown the
+    /// speaker never uttered — which the vocabulary guard cannot catch, because
+    /// the word survives and only the punctuation around it is new.
+    ///
+    /// Asterisks are removed unconditionally: speech has no way to produce one,
+    /// so any that appear were invented. Underscores are left alone, since they
+    /// occur in identifiers the speaker may genuinely be dictating.
+    public static func normalise(_ text: String) -> String {
         text
             .replacingOccurrences(of: "\u{2019}", with: "'")
             .replacingOccurrences(of: "\u{2018}", with: "'")
             .replacingOccurrences(of: "\u{201C}", with: "\"")
             .replacingOccurrences(of: "\u{201D}", with: "\"")
+            .replacingOccurrences(of: "*", with: "")
     }
 }
+
 
 // MARK: - Vocabulary guard
 

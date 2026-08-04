@@ -9,6 +9,14 @@ distributed under the MIT License; see LICENSE.
 COMPONENTS
 ========================================================================
 
+mlx-swift 0.31.6
+    https://github.com/ml-explore/mlx-swift
+    MIT
+
+mlx-swift-lm 3.31.4
+    https://github.com/ml-explore/mlx-swift-lm
+    MIT
+
 swift-argument-parser 1.8.2
     https://github.com/apple/swift-argument-parser
     Apache-2.0
@@ -29,6 +37,14 @@ swift-jinja 2.4.2
     https://github.com/huggingface/swift-jinja
     Apache-2.0
 
+swift-numerics 1.1.1
+    https://github.com/apple/swift-numerics
+    Apache-2.0
+
+swift-syntax 603.0.2
+    https://github.com/swiftlang/swift-syntax
+    Apache-2.0
+
 swift-transformers 1.1.9
     https://github.com/huggingface/swift-transformers
     Apache-2.0
@@ -40,6 +56,77 @@ WhisperKit 0.18.0
 yyjson 0.12.0
     https://github.com/ibireme/yyjson
     MIT
+
+========================================================================
+MODELS
+========================================================================
+
+Downloaded on first use rather than bundled with the application.
+
+Whisper large-v3 (turbo), Core ML conversion
+    https://huggingface.co/argmaxinc/whisperkit-coreml
+    MIT
+    Speech recognition. Original model by OpenAI under the MIT License;
+    Core ML conversion by Argmax under the MIT License.
+
+Gemma 4 E2B (instruction tuned), MLX 4-bit conversion
+    https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit
+    Apache-2.0
+    Optional transcript cleanup, downloaded only if the user enables it.
+    Original model by Google under the Apache License 2.0; see
+    https://ai.google.dev/gemma/docs/gemma_4_license
+
+========================================================================
+mlx-swift — MIT License
+========================================================================
+
+MIT License
+
+Copyright (c) 2023 ml-explore
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+========================================================================
+mlx-swift-lm — MIT License
+========================================================================
+
+MIT License
+
+Copyright (c) 2024 ml-explore
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ========================================================================
 WhisperKit — MIT License
@@ -191,7 +278,7 @@ This product contains a derivation of various files from SwiftNIO.
 Apache License 2.0
 ========================================================================
 
-Applies to: swift-argument-parser, swift-asn1, swift-collections, swift-crypto, swift-jinja, swift-transformers
+Applies to: swift-argument-parser, swift-asn1, swift-collections, swift-crypto, swift-jinja, swift-numerics, swift-syntax, swift-transformers
 
 Apache License
                            Version 2.0, January 2004

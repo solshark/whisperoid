@@ -15,6 +15,7 @@ final class Preferences {
         static let cleanupMode = "cleanupMode"
         static let cleanupGlossary = "cleanupGlossary"
         static let logCleanupComparison = "logCleanupComparison"
+        static let cleanupIdleUnloadMinutes = "cleanupIdleUnloadMinutes"
     }
 
     static let silenceRange: ClosedRange<Double> = 1.5...10.0
@@ -85,6 +86,21 @@ final class Preferences {
         didSet { defaults.set(logCleanupComparison, forKey: Key.logCleanupComparison) }
     }
 
+    /// Minutes of inactivity after which the cleanup model is unloaded.
+    ///
+    /// Zero keeps it resident. The model holds around 3.5 GB, and reloading it
+    /// from a warm cache takes about 3 seconds, so holding it through a long
+    /// idle period buys very little on a machine that is doing other work.
+    var cleanupIdleUnloadMinutes: Int {
+        didSet { defaults.set(cleanupIdleUnloadMinutes, forKey: Key.cleanupIdleUnloadMinutes) }
+    }
+
+    static let unloadChoices: [Int] = [1, 2, 5, 10, 30, 0]
+
+    static func unloadTitle(_ minutes: Int) -> String {
+        minutes == 0 ? "Never" : "After \(minutes) min"
+    }
+
     var glossaryTerms: [String] {
         cleanupGlossary
             .split(whereSeparator: \.isNewline)
@@ -99,7 +115,8 @@ final class Preferences {
             Key.autoStopOnSilence: true,
             Key.cleanupMode: CleanupMode.off.rawValue,
             Key.logCleanupComparison: false,
-            Key.cleanupGlossary: ModelCleaner.Configuration.defaultGlossary
+            Key.cleanupIdleUnloadMinutes: 2,
+            Key.cleanupGlossary: ModelOutput.defaultGlossary
                 .joined(separator: "\n"),
             // Measured gaps within continuous speech reach 1.9 s, so 3 s leaves
             // little margin. Auto-stop is a safety net rather than the primary
@@ -114,5 +131,6 @@ final class Preferences {
         cleanupMode = CleanupMode(rawValue: defaults.string(forKey: Key.cleanupMode) ?? "") ?? .off
         cleanupGlossary = defaults.string(forKey: Key.cleanupGlossary) ?? ""
         logCleanupComparison = defaults.bool(forKey: Key.logCleanupComparison)
+        cleanupIdleUnloadMinutes = defaults.integer(forKey: Key.cleanupIdleUnloadMinutes)
     }
 }
