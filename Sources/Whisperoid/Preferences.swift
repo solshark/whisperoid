@@ -14,6 +14,7 @@ final class Preferences {
         static let silenceDropDecibels = "silenceDropDecibels"
         static let cleanupMode = "cleanupMode"
         static let cleanupGlossary = "cleanupGlossary"
+        static let logCleanupComparison = "logCleanupComparison"
     }
 
     static let silenceRange: ClosedRange<Double> = 1.5...10.0
@@ -74,6 +75,16 @@ final class Preferences {
         didSet { defaults.set(cleanupGlossary, forKey: Key.cleanupGlossary) }
     }
 
+    /// Writes the text before and after cleanup to the unified log.
+    ///
+    /// Off by default and deliberately not sticky-by-accident: entries are
+    /// written at public privacy, so anything dictated while this is on is
+    /// readable by any process that can read the system log. It exists to make
+    /// cleanup quality judgeable during evaluation, not to run permanently.
+    var logCleanupComparison: Bool {
+        didSet { defaults.set(logCleanupComparison, forKey: Key.logCleanupComparison) }
+    }
+
     var glossaryTerms: [String] {
         cleanupGlossary
             .split(whereSeparator: \.isNewline)
@@ -87,6 +98,7 @@ final class Preferences {
             Key.playSounds: true,
             Key.autoStopOnSilence: true,
             Key.cleanupMode: CleanupMode.off.rawValue,
+            Key.logCleanupComparison: false,
             Key.cleanupGlossary: ModelCleaner.Configuration.defaultGlossary
                 .joined(separator: "\n"),
             // Measured gaps within continuous speech reach 1.9 s, so 3 s leaves
@@ -101,5 +113,6 @@ final class Preferences {
         silenceDropDecibels = defaults.double(forKey: Key.silenceDropDecibels)
         cleanupMode = CleanupMode(rawValue: defaults.string(forKey: Key.cleanupMode) ?? "") ?? .off
         cleanupGlossary = defaults.string(forKey: Key.cleanupGlossary) ?? ""
+        logCleanupComparison = defaults.bool(forKey: Key.logCleanupComparison)
     }
 }

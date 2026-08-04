@@ -42,6 +42,8 @@ struct SettingsView: View {
             general
                 .tabItem { Label("General", systemImage: "gearshape") }
         }
+        // The tab strip otherwise sits flush against the title bar.
+        .padding(.top, 10)
         .frame(width: 540, height: Self.contentHeight)
         // Activation and placement are handled by SettingsWindowController.
         .onAppear { controller.refreshLaunchAtLogin() }
@@ -138,6 +140,14 @@ struct SettingsView: View {
                     caption("This list is what makes the model mode work: without it the models tested corrected roughly one defect in six, and with it four to six. Listing a term once is enough — the model matches mishearings and transliterations of it, so Colima also catches Kolyma and Колема. Do not list two spellings of the same thing.")
                 }
                 .disabled(preferences.cleanupMode != .model)
+            }
+
+            Section {
+                Toggle("Record before and after in the system log",
+                       isOn: $preferences.logCleanupComparison)
+                    .disabled(preferences.cleanupMode == .off)
+
+                caption("For judging whether cleanup is helping. Everything dictated while this is on is written to the system log in plain text, where any process that can read the log can see it. Turn it off once you have decided.")
             }
         }
         .formStyle(.grouped)

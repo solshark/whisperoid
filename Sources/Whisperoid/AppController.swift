@@ -401,7 +401,9 @@ final class AppController {
             return .untouched(output.text)
 
         case .spelling:
-            return SpellingCleaner().clean(output.text, language: output.language)
+            let result = SpellingCleaner().clean(output.text, language: output.language)
+            report(result)
+            return result
 
         case .model:
             let configuration = ModelCleaner.Configuration(
@@ -410,14 +412,33 @@ final class AppController {
             do {
                 let result = try await ModelCleaner(configuration: configuration)
                     .clean(output.text)
-                if !result.rejected.isEmpty {
-                    Log.info("Cleanup rejected: \(result.rejected.joined(separator: "; "))")
-                }
+                report(result)
                 return result
             } catch {
                 Log.error("Cleanup unavailable: \(error.localizedDescription)")
                 return .untouched(output.text, mode: .model)
             }
+        }
+    }
+
+    /// Records what a cleanup pass did.
+    ///
+    /// Timing and refusals are always logged: they describe the mechanism
+    /// rather than the content, and a guard firing constantly is something the
+    /// user should be able to discover. The text itself is logged only when
+    /// explicitly enabled, because these entries are public and a dictation
+    /// app's transcripts are not the system log's business by default.
+    private func report(_ result: CleanupResult) {
+        if !result.rejected.isEmpty {
+            Log.info("cleanup[\(result.mode.rawValue)] rejected: \(result.rejected.joined(separator: "; "))")
+        }
+        guard result.changed else { return }
+
+        Log.info(String(format: "cleanup[%@] changed in %.2f s",
+                        result.mode.rawValue, result.duration))
+        if preferences.logCleanupComparison {
+            Log.info("cleanup before: \(result.original)")
+            Log.info("cleanup after:  \(result.text)")
         }
     }
 
