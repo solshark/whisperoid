@@ -9,6 +9,10 @@ final class OverlayModel {
     enum Phase: Equatable {
         case recording
         case transcribing
+        /// Only entered when post-processing is switched on. The model mode can
+        /// take a couple of seconds from cold, and without its own phase that
+        /// time is indistinguishable from a stalled transcription.
+        case cleaning
         case done
         case failed
     }

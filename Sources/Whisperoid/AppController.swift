@@ -389,6 +389,13 @@ final class AppController {
     /// losing that to an optional convenience would be a far worse bug than any
     /// defect cleanup was meant to fix.
     private func cleanup(_ output: Transcriber.Output) async -> CleanupResult {
+        // Announced only when there is actually something to wait for. With
+        // cleanup off the pass returns immediately, and showing the phase would
+        // be a flicker with no information in it.
+        if preferences.cleanupMode != .off {
+            overlay.update(.cleaning)
+        }
+
         switch preferences.cleanupMode {
         case .off:
             return .untouched(output.text)
