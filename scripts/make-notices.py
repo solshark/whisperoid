@@ -17,6 +17,7 @@ Run after `swift package resolve`:
 import json
 import pathlib
 import re
+import textwrap
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -99,6 +100,28 @@ def main():
     if unknown:
         sys.exit(f"error: could not classify licences for: {', '.join(unknown)}")
 
+    # Models are downloaded at runtime rather than resolved as packages, so they
+    # cannot be discovered from Package.resolved and are listed by hand. They
+    # still reach the user's machine through this app, and their licences still
+    # apply, so leaving them out would misrepresent what Whisperoid installs.
+    models = [
+        {
+            "name": "Whisper large-v3 (turbo), Core ML conversion",
+            "url": "https://huggingface.co/argmaxinc/whisperkit-coreml",
+            "kind": "MIT",
+            "note": "Speech recognition. Original model by OpenAI under the MIT "
+                    "License; Core ML conversion by Argmax under the MIT License.",
+        },
+        {
+            "name": "Gemma 4 E2B (instruction tuned), MLX 4-bit conversion",
+            "url": "https://huggingface.co/mlx-community/gemma-4-e2b-it-4bit",
+            "kind": "Apache-2.0",
+            "note": "Optional transcript cleanup, downloaded only if the user "
+                    "enables it. Original model by Google under the Apache "
+                    "License 2.0; see https://ai.google.dev/gemma/docs/gemma_4_license",
+        },
+    ]
+
     out = []
     out.append("Whisperoid — third-party notices")
     out.append("")
@@ -115,6 +138,20 @@ def main():
         out.append(f"{c['name']} {c['version']}")
         out.append(f"    {c['url']}")
         out.append(f"    {c['kind']}")
+        out.append("")
+
+    out.append("=" * 72)
+    out.append("MODELS")
+    out.append("=" * 72)
+    out.append("")
+    out.append("Downloaded on first use rather than bundled with the application.")
+    out.append("")
+    for m in models:
+        out.append(m["name"])
+        out.append(f"    {m['url']}")
+        out.append(f"    {m['kind']}")
+        for line in textwrap.wrap(m["note"], width=68):
+            out.append(f"    {line}")
         out.append("")
 
     # MIT carries its copyright inside the licence text, so each MIT component

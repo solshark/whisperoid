@@ -8,6 +8,11 @@ struct Transcription: Identifiable, Sendable {
     let text: String
     let language: String
     let duration: TimeInterval
+    /// What the transcriber produced before cleanup, when cleanup changed it.
+    /// Kept so a cleanup can be judged against what it replaced instead of
+    /// being taken on trust.
+    var originalText: String?
+    var cleanupSeconds: TimeInterval?
 }
 
 /// Owns the dictation state machine and wires the hotkeys and overlay to it.
@@ -46,6 +51,10 @@ final class AppController {
     private(set) var launchAtLoginMessage: String?
 
     private(set) var loadPhase: Transcriber.Phase = .locating
+    /// Progress of the optional cleanup model, shown in Settings. Its first
+    /// load downloads several gigabytes, which must be visible rather than
+    /// looking like the app has hung.
+    private(set) var cleanupPhase: EmbeddedCleaner.Phase = .idle
     private(set) var lastErrorText: String?
     private var phaseChangedAt = Date()
     private var loggedDownloadPercent = -1
@@ -63,6 +72,10 @@ final class AppController {
     @ObservationIgnored private var acknowledgementsWindow: HostedWindowController<AcknowledgementsView>?
     private var tickTimer: Timer?
     private var silenceDetector: SilenceDetector?
+    /// Nil only when the support directory cannot be created, in which case
+    /// cleanup is unavailable and dictation continues without it.
+    private let embeddedCleaner: EmbeddedCleaner?
+    @ObservationIgnored private var cleanupUnloadTimer: Timer?
 
     func showSettings() {
         if settingsWindow == nil {
@@ -102,6 +115,10 @@ final class AppController {
     }
 
     init() {
+        embeddedCleaner = (try? Paths.ensureSupportDirectory()).map {
+            EmbeddedCleaner(storageDirectory: $0)
+        }
+
         HotkeyCenter.shared.onKeyUp(for: .toggleDictation) { [weak self] in
             self?.toggle()
         }
@@ -170,6 +187,12 @@ final class AppController {
             Log.info(String(format: "startup: ready in %.2f s", Date().timeIntervalSince(started)))
             lastErrorText = nil
             state = .idle
+
+            // Warm the cleanup model when it is already the chosen mode, so the
+            // first dictation of a session is not the one that pays for the
+            // load. The idle timer starts with it, so an unused model does not
+            // sit on several gigabytes indefinitely.
+            prepareCleanupModel()
         } catch {
             let elapsed = Date().timeIntervalSince(started)
             Log.error(String(format: "startup: failed after %.2f s during %@: %@",
@@ -357,10 +380,12 @@ final class AppController {
                     return
                 }
 
-                try injector.inject(output.text)
-                record(output)
+                let cleaned = await cleanup(output)
 
-                overlay.model.text = output.text
+                try injector.inject(cleaned.text)
+                record(output, cleaned: cleaned)
+
+                overlay.model.text = cleaned.text
                 overlay.model.language = output.language
                 overlay.model.duration = output.duration
                 overlay.update(.done)
@@ -375,12 +400,135 @@ final class AppController {
         }
     }
 
-    private func record(_ output: Transcriber.Output) {
+    /// Runs the configured post-processing over a transcript.
+    ///
+    /// Never throws. A cleanup that fails, times out, or has no server to talk
+    /// to returns the transcript untouched: the user has already spoken, and
+    /// losing that to an optional convenience would be a far worse bug than any
+    /// defect cleanup was meant to fix.
+    private func cleanup(_ output: Transcriber.Output) async -> CleanupResult {
+        // Announced only when there is actually something to wait for. With
+        // cleanup off the pass returns immediately, and showing the phase would
+        // be a flicker with no information in it.
+        if preferences.cleanupMode != .off {
+            overlay.update(.cleaning)
+        }
+
+        switch preferences.cleanupMode {
+        case .off:
+            return .untouched(output.text)
+
+        case .spelling:
+            let result = SpellingCleaner().clean(output.text, language: output.language)
+            report(result)
+            return result
+
+        case .model:
+            guard let cleaner = embeddedCleaner else {
+                return .untouched(output.text, mode: .model)
+            }
+            do {
+                // Loads on demand. The first call after choosing this mode may
+                // download several gigabytes, which is why the phase is
+                // published rather than silently awaited.
+                try await loadCleanupModel()
+                let result = try await cleaner.clean(
+                    output.text,
+                    configuration: .init(glossary: preferences.glossaryTerms)
+                )
+                report(result)
+                scheduleCleanupUnload()
+                return result
+            } catch {
+                Log.error("Cleanup unavailable: \(error.localizedDescription)")
+                return .untouched(output.text, mode: .model)
+            }
+        }
+    }
+
+    // MARK: - Cleanup model
+
+    /// Loads the cleanup model, publishing progress as it goes.
+    ///
+    /// Cheap once loaded, so callers need not track whether it has run.
+    func loadCleanupModel() async throws {
+        guard let cleaner = embeddedCleaner else { return }
+        cleanupUnloadTimer?.invalidate()
+        try await cleaner.load { [weak self] phase in
+            Task { @MainActor in self?.cleanupPhase = phase }
+        }
+    }
+
+    /// Called when the user picks a cleanup mode, so a multi-gigabyte download
+    /// starts while Settings is open rather than in the middle of a dictation.
+    func prepareCleanupModel() {
+        guard preferences.cleanupMode == .model else { return }
+        Task {
+            let started = Date()
+            do {
+                try await loadCleanupModel()
+                Log.info(String(format: "cleanup model ready in %.2f s",
+                                Date().timeIntervalSince(started)))
+                scheduleCleanupUnload()
+            } catch {
+                Log.error("cleanup model failed to load: \(error.localizedDescription)")
+                cleanupPhase = .idle
+            }
+        }
+    }
+
+    /// Drops the model after a period of inactivity.
+    ///
+    /// It occupies roughly 3.5 GB and reloads from a warm cache in about three
+    /// seconds, so a machine doing other work is better off without it between
+    /// dictation sessions.
+    func scheduleCleanupUnload() {
+        cleanupUnloadTimer?.invalidate()
+        let minutes = preferences.cleanupIdleUnloadMinutes
+        guard minutes > 0 else { return }
+
+        cleanupUnloadTimer = Timer.scheduledTimer(
+            withTimeInterval: TimeInterval(minutes) * 60,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let cleaner = self.embeddedCleaner else { return }
+                await cleaner.unload()
+                self.cleanupPhase = .idle
+                Log.info("cleanup model unloaded after \(minutes) min idle")
+            }
+        }
+    }
+
+    /// Records what a cleanup pass did.
+    ///
+    /// Timing and refusals are always logged: they describe the mechanism
+    /// rather than the content, and a guard firing constantly is something the
+    /// user should be able to discover. The text itself is logged only when
+    /// explicitly enabled, because these entries are public and a dictation
+    /// app's transcripts are not the system log's business by default.
+    private func report(_ result: CleanupResult) {
+        if !result.rejected.isEmpty {
+            Log.info("cleanup[\(result.mode.rawValue)] rejected: \(result.rejected.joined(separator: "; "))")
+        }
+        guard result.changed else { return }
+
+        Log.info(String(format: "cleanup[%@] changed in %.2f s",
+                        result.mode.rawValue, result.duration))
+        if preferences.logCleanupComparison {
+            Log.info("cleanup before: \(result.original)")
+            Log.info("cleanup after:  \(result.text)")
+        }
+    }
+
+    private func record(_ output: Transcriber.Output, cleaned: CleanupResult) {
         history.insert(
             Transcription(
-                text: output.text,
+                text: cleaned.text,
                 language: output.language,
-                duration: output.duration
+                duration: output.duration,
+                originalText: cleaned.changed ? cleaned.original : nil,
+                cleanupSeconds: cleaned.changed ? cleaned.duration : nil
             ),
             at: 0
         )

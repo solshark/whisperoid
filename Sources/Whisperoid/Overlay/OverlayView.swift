@@ -33,7 +33,7 @@ struct OverlayView: View {
     private var mode: WavesVisual.Mode {
         switch model.phase {
         case .recording: .listening
-        case .transcribing: .working
+        case .transcribing, .cleaning: .working
         case .done, .failed: .settled(since: model.phaseChangedAt)
         }
     }
@@ -50,6 +50,12 @@ struct OverlayView: View {
 
         case .transcribing:
             Text("TRANSCRIBING")
+                .font(.system(size: 15, weight: .light, design: .monospaced))
+                .tracking(4)
+                .foregroundStyle(.white.opacity(0.88))
+
+        case .cleaning:
+            Text("CLEANING UP")
                 .font(.system(size: 15, weight: .light, design: .monospaced))
                 .tracking(4)
                 .foregroundStyle(.white.opacity(0.88))
