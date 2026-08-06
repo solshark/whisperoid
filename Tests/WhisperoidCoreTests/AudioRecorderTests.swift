@@ -195,6 +195,115 @@ struct AudioRecorderTests {
         #expect(await recorder.stop().isEmpty)
     }
 
+    // MARK: - Deadlines
+    //
+    // A CoreAudio call that never returns cannot be produced on demand, so these
+    // occupy the audio queue directly instead. That reproduces the part that
+    // caused the outage: the queue stops draining, and every operation behind it
+    // waits for something that is not coming.
+
+    /// Short enough to wait for, long enough that the machine being busy cannot
+    /// trip it on its own.
+    private static let testTimeout: TimeInterval = 0.2
+
+    /// Before this, `start()` awaited a continuation that a hung queue could
+    /// never resume. The caller stayed suspended for the life of the process,
+    /// never cleared its "already starting" guard, and every later press of the
+    /// shortcut was swallowed by that guard in silence.
+    @Test("A start the audio queue never runs fails instead of waiting for ever")
+    func startFailsWhenTheQueueIsWedged() async {
+        let recorder = AudioRecorder(engineTimeout: Self.testTimeout)
+        recorder.blockEngineQueueForTesting(seconds: 5)
+
+        await #expect(throws: AudioRecorder.RecorderError.self) {
+            try await recorder.start()
+        }
+    }
+
+    /// Failing the one recording is not enough. A serial queue that is still
+    /// blocked is one nothing else will ever run on either, so the queue itself
+    /// has to be written off, or the first hang takes every later recording with
+    /// it and only a restart brings the application back.
+    @Test("A wedged queue is abandoned so later work does not queue up behind it")
+    func aWedgedQueueIsReplaced() async {
+        let recorder = AudioRecorder(engineTimeout: Self.testTimeout)
+        let before = recorder.engineGenerationForTesting
+
+        recorder.blockEngineQueueForTesting(seconds: 5)
+        _ = try? await recorder.start()
+
+        #expect(recorder.engineGenerationForTesting == before + 1, "the hung queue is still in use")
+
+        // The abandoned queue has several seconds left to run. Reaching the
+        // engine at all proves this is no longer that queue: going through the
+        // old one would block until its sleep finished.
+        let started = Date()
+        _ = recorder.configurationChangesHandled
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(elapsed < 1, "the replacement queue is still stuck behind the abandoned one")
+    }
+
+    /// The samples are held under the sample lock, not on the audio queue, so
+    /// they remain reachable when the engine that produced them does not. A
+    /// dictation that has already been spoken should still be transcribed even
+    /// though the hardware has stopped answering.
+    @Test("Audio already captured survives a stop the audio queue never runs")
+    func stopSalvagesAudioFromAWedgedQueue() async {
+        let recorder = AudioRecorder(engineTimeout: Self.testTimeout)
+        feed(recorder, channels: 1, sampleRate: 16_000, seconds: 0.3)
+
+        recorder.blockEngineQueueForTesting(seconds: 5)
+        let captured = await recorder.stop()
+
+        #expect(captured.isEmpty == false, "the recording was thrown away with the engine")
+        #expect(recorder.recordedSeconds == 0, "the buffer was not cleared for the next recording")
+    }
+
+    /// Negative control for the three above: with the queue free, nothing times
+    /// out and no queue is abandoned. Without this, a mistake that made every
+    /// operation time out would leave the tests above passing.
+    @Test("A queue that is not wedged is left alone")
+    func aFreeQueueIsNeverAbandoned() async {
+        let recorder = AudioRecorder(engineTimeout: Self.testTimeout)
+        let before = recorder.engineGenerationForTesting
+
+        _ = await recorder.stop()
+        try? await Task.sleep(for: .milliseconds(400))
+
+        #expect(recorder.engineGenerationForTesting == before, "a queue that answered in time was abandoned")
+    }
+
+    /// The engine an abandoned queue is holding is never stopped, because
+    /// stopping it would take the lock that is already held. It therefore keeps
+    /// delivering buffers, and without the generation check in the tap those
+    /// would land in the buffer the next recording is filling.
+    @Test("A tap belonging to an abandoned engine stops contributing audio")
+    func abandonedTapsFallSilent() async {
+        let recorder = AudioRecorder(engineTimeout: Self.testTimeout)
+        let target = AudioRecorder.makeTargetFormat()!
+
+        recorder.blockEngineQueueForTesting(seconds: 5)
+        _ = try? await recorder.start()
+
+        let abandoned = recorder.engineGenerationForTesting - 1
+        recorder.handleTapBuffer(
+            buffer(channels: 1, sampleRate: 16_000, seconds: 0.3),
+            to: target,
+            generation: abandoned
+        )
+        #expect(recorder.recordedSeconds == 0, "a dead engine is still feeding the next recording")
+
+        // The live engine's tap is unaffected, so the check is discriminating
+        // rather than simply refusing everything.
+        recorder.handleTapBuffer(
+            buffer(channels: 1, sampleRate: 16_000, seconds: 0.3),
+            to: target,
+            generation: abandoned + 1
+        )
+        #expect(recorder.recordedSeconds > 0.2, "the current engine's audio was dropped too")
+    }
+
     /// The engine, the running flag and the observer are all reachable from the
     /// audio hardware's thread as well as from the caller's, and none of them
     /// are covered by the sample lock — they are kept safe by being confined to

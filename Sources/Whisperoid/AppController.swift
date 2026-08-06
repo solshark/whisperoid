@@ -142,6 +142,15 @@ final class AppController {
             Task { @MainActor in self?.handleAudioConfigurationChange() }
         }
 
+        // The user is told about this by the error the operation throws. The log
+        // entry is for afterwards: a hang that leaves no trace has to be caught
+        // in the act to be diagnosed at all.
+        let engineTimeout = recorder.engineTimeout
+        recorder.onEngineTimeout = { operation in
+            Log.error(String(format: "audio: %@ exceeded %.0f s; abandoning the audio queue "
+                             + "and starting a new one", operation, engineTimeout))
+        }
+
         // Diagnostic hooks: open a window shortly after launch so it can be
         // verified without driving the menu bar.
         let environment = ProcessInfo.processInfo.environment
