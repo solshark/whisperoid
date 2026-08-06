@@ -3,6 +3,9 @@
 A menu bar dictation app for macOS. Press a hotkey, speak, press again: the
 transcript is placed on the clipboard and confirmed with a floating overlay.
 
+![The floating overlay during a recording, showing the live waveform and elapsed
+time over whatever you happen to be looking at.](docs/screenshot.png)
+
 Everything runs on the machine. Speech is transcribed locally by Whisper on the
 Neural Engine, nothing is sent anywhere, and once the model has been downloaded
 the app needs no network connection at all.
