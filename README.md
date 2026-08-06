@@ -2,10 +2,48 @@
 
 A menu bar dictation app for macOS. Press a hotkey, speak, press again: the
 transcript is placed on the clipboard and confirmed with a floating overlay.
-Transcription runs locally via Whisper on the Neural Engine.
 
-Personal tool, Apple Silicon only. Built and tested on an M3 Max running
-macOS 26.
+Everything runs on the machine. Speech is transcribed locally by Whisper on the
+Neural Engine, nothing is sent anywhere, and once the model has been downloaded
+the app needs no network connection at all.
+
+English and Russian are detected automatically, with no per-language shortcut to
+remember.
+
+## Requirements
+
+- An Apple Silicon Mac. Intel is not supported.
+- macOS 14 or later. Developed and tested on macOS 26 on an M3 Max.
+- About 1.5 GB of disk for the speech model, downloaded on first launch.
+- Permission to use the microphone, requested the first time you record. The app
+  asks for nothing else.
+
+## Getting started
+
+There is no prebuilt download yet, so the app is built from source. This needs
+Xcode installed, along with its Metal toolchain:
+
+```sh
+xcodebuild -downloadComponent MetalToolchain
+```
+
+Then, from a clone of this repository:
+
+```sh
+./scripts/build-app.sh
+open build/Whisperoid.app
+```
+
+Whisperoid runs in the menu bar and has no Dock icon or window. On first launch
+it downloads the speech model, which takes a few minutes and reports progress in
+the menu — see [First launch on a new machine](#first-launch-on-a-new-machine)
+if it looks like it has stalled.
+
+Press `⌘⌃D` to start dictating, `⌘⌃D` again to stop, then paste with `⌘V`.
+`Escape` discards a recording instead of transcribing it.
+
+To keep it, drag `build/Whisperoid.app` to `/Applications`, or run
+`./scripts/package.sh` to produce a disk image.
 
 ## Licence
 
@@ -72,6 +110,36 @@ Measured on an M3 Max, warm, second run:
 Full large-v3 is roughly four times slower, produced identical English text, and
 misdetected Russian as Romanian badly enough to transcribe it *as* Romanian.
 Warm model load is about 5.6 s; resident memory is about 0.8 GB.
+
+## Transcript cleanup
+
+Speech to text produces run-together words, missing punctuation and mangled
+technical vocabulary. Cleanup is an optional pass over the transcript before it
+reaches the clipboard, chosen in Settings:
+
+| Mode | What it does |
+| --- | --- |
+| Off | Default. Nothing is downloaded and nothing runs. |
+| Spelling (macOS) | The system spell checker splits run-together words. No model, no download. |
+| Language model (experimental) | An on-device model repairs spacing, punctuation and misheard terms. |
+
+**Model mode downloads a second model** of about 3.3 GB,
+`mlx-community/gemma-4-e2b-it-4bit`, the first time it is selected. It runs
+in-process through MLX, is loaded at launch and released again after an
+idle period, and like everything else here it never contacts a network once
+downloaded. A user who never opens Settings is unaffected by any of this.
+
+**The glossary is what makes it work, not the model.** Across eight models
+tested, a run with no glossary corrected roughly one defect in six; with one,
+four to six. The glossary is editable in Settings, one term per line, and is
+where names specific to your own work belong — colleagues, employers, internal
+services. One entry covers both alphabets: listing `Colima` also repairs its
+Cyrillic mishearings.
+
+Cleanup is not permitted to cost you a dictation. The output is rejected
+wholesale if the model invented a word that was not in the transcript or the
+glossary, or dropped a glossary term it was given, and the original transcript
+is returned untouched. The same applies if cleanup fails or times out.
 
 ## Why KeyboardShortcuts was removed
 
@@ -143,14 +211,18 @@ and adjacent ordinary words.
 
 ```
 Sources/
-  WhisperoidCore/     Audio capture, transcription, silence detection, clipboard
+  WhisperoidCore/     Audio capture, transcription, silence detection, cleanup
   Whisperoid/         Menu bar app, hotkeys, overlay, preferences
   vadcheck/           Development tool for tuning auto-stop against a recording
+  cleanupcheck/       Development tool for scoring the cleanup model
+Tests/                Swift Testing suites; run with `swift test`
 Resources/            Bundle configuration and entitlements
 scripts/build-app.sh  Assembles and signs Whisperoid.app
 scripts/package.sh    Produces a distributable disk image in dist/
-spike/                Standalone benchmark harness from model selection
 ```
+
+The tests gate a release: `scripts/package.sh` runs them and builds nothing if
+they fail.
 
 ## Building
 

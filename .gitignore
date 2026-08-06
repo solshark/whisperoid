@@ -18,3 +18,10 @@ dist/
 
 # Local model backups (large, never committed)
 backup/
+
+# Coverage output
+*.profraw
+
+# Model-evaluation scratch. Kept locally; the findings that mattered are in
+# the README and in the comments on defaultGlossary.
+spike/

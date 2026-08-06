@@ -178,9 +178,13 @@ public enum ModelOutput {
     /// work. List one spelling per term: an early version offered both
     /// `Postgres` and `PostgreSQL`, and the models read that as an instruction
     /// to swap one for the other.
+    ///
+    /// These are deliberately generic developer tools. Names specific to your
+    /// own work — colleagues, employers, internal services — are what the
+    /// glossary is really for, and they belong in Settings rather than here.
     public static let defaultGlossary = [
         "Colima", "Claude Code", "Postgres", "WhisperKit", "MLX", "Whisperoid",
-        "Gemma", "Docker", "Prezentor", "GitLab", "Core ML", "Swift", "Xcode",
+        "Gemma", "Docker", "GitLab", "Core ML", "Swift", "Xcode",
         "MinIO", "Celery", "Redis", "Kubernetes", "Homebrew",
     ]
 
