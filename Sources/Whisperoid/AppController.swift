@@ -64,6 +64,13 @@ final class AppController {
     let preferences = Preferences()
 
     private let recorder = AudioRecorder()
+
+    /// True between the shortcut being pressed and the engine actually running.
+    ///
+    /// Starting the engine is asynchronous and can take a noticeable moment, so
+    /// unlike before there is a window in which the main thread is free, `state`
+    /// is still `.idle`, and the shortcut can be pressed again.
+    private var isStartingRecording = false
     private let transcriber = Transcriber()
     private let injector: any TextInjector = ClipboardInjector()
     private let overlay = OverlayController()
@@ -312,13 +319,21 @@ final class AppController {
     }
 
     private func startRecording() {
+        guard !isStartingRecording else {
+            NSSound.beep()
+            return
+        }
+        isStartingRecording = true
+
         Task {
+            defer { isStartingRecording = false }
+
             guard await AudioRecorder.requestMicrophoneAccess() else {
                 fail("Microphone access denied. Enable it in System Settings > Privacy & Security > Microphone.")
                 return
             }
             do {
-                try recorder.start()
+                try await recorder.start()
                 recordedSeconds = 0
                 state = .recording
 
@@ -358,21 +373,32 @@ final class AppController {
 
     func cancel() {
         guard state == .recording else { return }
-        recorder.cancel()
+
+        // The state change and the UI happen now; tearing the engine down is
+        // allowed to take as long as it takes. Nothing downstream needs the
+        // captured audio, so there is nothing to wait for.
+        state = .idle
         endRecordingSession()
         overlay.hideImmediately()
-        state = .idle
+
+        Task { await recorder.cancel() }
     }
 
     private func finishRecording() {
         guard state == .recording else { return }
 
-        let samples = recorder.stop()
-        endRecordingSession()
+        // Moved ahead of the first suspension point. Stopping the engine is now
+        // asynchronous, so the main thread stays free while it happens and the
+        // shortcut, the tick timer and a device-change notification can all
+        // arrive in that window. Each of those is guarded by `state ==
+        // .recording`, so making the transition first is what turns them into
+        // no-ops rather than a second attempt to finish the same recording.
         state = .transcribing
+        endRecordingSession()
         overlay.update(.transcribing)
 
         Task {
+            let samples = await recorder.stop()
             do {
                 let output = try await transcriber.transcribe(samples: samples)
                 guard !output.text.isEmpty else {

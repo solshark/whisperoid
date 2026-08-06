@@ -185,13 +185,36 @@ struct AudioRecorderTests {
     }
 
     @Test("Stopping returns the captured audio and clears the buffer")
-    func stopClearsState() {
+    func stopClearsState() async {
         let recorder = AudioRecorder()
         feed(recorder, channels: 1, sampleRate: 16_000, seconds: 0.3)
         #expect(recorder.recordedSeconds > 0.2)
 
         // `stop()` is a no-op unless the engine is running, so the buffer is
         // checked directly rather than through the engine lifecycle.
-        #expect(recorder.stop().isEmpty)
+        #expect(await recorder.stop().isEmpty)
+    }
+
+    /// The engine, the running flag and the observer are all reachable from the
+    /// audio hardware's thread as well as from the caller's, and none of them
+    /// are covered by the sample lock — they are kept safe by being confined to
+    /// one serial queue instead.
+    ///
+    /// Confinement is invisible: a change that moves an engine call back off the
+    /// queue reintroduces the race silently, and the symptom is a hang in
+    /// CoreAudio hours later rather than a failure here. This hammers the two
+    /// paths that arrive from different threads in the real application.
+    @Test("Renewal and configuration changes can interleave without corrupting state")
+    func concurrentRenewalAndConfigurationChanges() async {
+        let recorder = AudioRecorder()
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<20 {
+                group.addTask { recorder.renewEngine() }
+                group.addTask { recorder.handleConfigurationChange() }
+            }
+        }
+
+        #expect(recorder.configurationChangesHandled == 20)
     }
 }
