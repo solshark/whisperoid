@@ -109,6 +109,7 @@ public final class AudioRecorder: @unchecked Sendable {
     private var configurationChangeCount = 0
 
     private let lock = NSLock()
+    private var configurationChangeEndedRecording = false
     private var samples: [Float] = []
     private var level: Float = 0
     private var levels: [Float] = []
@@ -123,13 +124,27 @@ public final class AudioRecorder: @unchecked Sendable {
     /// Called when the audio hardware configuration changes while recording,
     /// which happens when a device is connected, removed, or made the default.
     ///
-    /// Capture cannot meaningfully continue across the change, so the recording
-    /// is finished early rather than left running against hardware that may no
-    /// longer be delivering anything.
+    /// Capture cannot meaningfully continue across the change — the tap does not
+    /// survive it — so the recording is finished with whatever it has rather
+    /// than left running against hardware that is no longer delivering.
     ///
     /// Invoked on `engineQueue`, so an implementation that touches UI has to hop
     /// to the main actor itself.
     public var onConfigurationChange: (@Sendable () -> Void)?
+
+    /// Whether the recording that just ended was cut short by the input
+    /// hardware reconfiguring rather than by the user. Read after `stop()`.
+    ///
+    /// The distinction matters because the two produce identical symptoms. A
+    /// device that never delivers a microphone stream yields a recording of
+    /// almost nothing, which is indistinguishable from someone tapping the
+    /// shortcut twice by accident — and reporting the second when it was the
+    /// first sends the user looking in entirely the wrong place.
+    public var endedByConfigurationChange: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return configurationChangeEndedRecording
+    }
 
     /// Called with the name of the operation that exceeded `engineTimeout`.
     ///
@@ -151,6 +166,12 @@ public final class AudioRecorder: @unchecked Sendable {
     /// replaced it rather than reconfiguring the old one.
     var engineIdentity: ObjectIdentifier {
         currentQueue.sync { ObjectIdentifier(engine) }
+    }
+
+    /// Forces the running flag. Starting for real needs hardware, so this is the
+    /// only way to reach the branches that apply only mid-recording.
+    func setRunningForTesting(_ running: Bool) {
+        currentQueue.sync { isRunning = running }
     }
 
     /// How many times a queue has been abandoned, so tests can prove a deadline
@@ -409,11 +430,21 @@ public final class AudioRecorder: @unchecked Sendable {
         cachedConverterFormat = nil
         lock.unlock()
 
-        if isRunning {
-            onConfigurationChange?()
-        } else {
+        guard isRunning else {
             engine.stop()
+            return
         }
+
+        // Noted before the callback, so whoever finishes the recording can tell
+        // the user why it ended. Rebuilding capture here was tried and removed:
+        // a tap does not survive the change, but restarting the engine is what
+        // provokes the next change on a device that cannot supply a microphone,
+        // so it rebuilt five times, captured 0.17 s, and failed anyway.
+        lock.lock()
+        configurationChangeEndedRecording = true
+        lock.unlock()
+
+        onConfigurationChange?()
     }
 
     // MARK: - Capture
@@ -470,13 +501,32 @@ public final class AudioRecorder: @unchecked Sendable {
     private func startOnQueue(generation: Int) throws {
         guard !isRunning else { return }
 
+        _ = drainSamples()
+
+        lock.lock()
+        configurationChangeEndedRecording = false
+        lock.unlock()
+
+        try beginCaptureOnQueue(generation: generation)
+
+        guard isCurrent(generation) else {
+            throw RecorderError.timedOut("start recording")
+        }
+
+        isRunning = true
+    }
+
+    /// Builds an engine, installs the tap and starts capture, leaving whatever
+    /// has already been recorded alone.
+    ///
+    /// Kept separate from the bookkeeping in `startOnQueue` because this is the
+    /// part that touches hardware and the part that can therefore hang.
+    private func beginCaptureOnQueue(generation: Int) throws {
         // Built here rather than passed in, so no AVFoundation object has to
         // cross onto this queue from the caller.
         guard let targetFormat = Self.makeTargetFormat() else {
             throw RecorderError.engineFailed("could not build a 16 kHz mono format")
         }
-
-        _ = drainSamples()
 
         // Before anything else, so the format below is read from the hardware
         // that is present now rather than whatever was there last time.
@@ -525,12 +575,6 @@ public final class AudioRecorder: @unchecked Sendable {
             input.removeTap(onBus: 0)
             throw RecorderError.engineFailed(error.localizedDescription)
         }
-
-        guard isCurrent(generation) else {
-            throw RecorderError.timedOut("start recording")
-        }
-
-        isRunning = true
     }
 
     /// Stops capture and returns everything recorded, clearing the buffer.

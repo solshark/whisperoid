@@ -142,6 +142,7 @@ final class AppController {
             Task { @MainActor in self?.handleAudioConfigurationChange() }
         }
 
+
         // The user is told about this by the error the operation throws. The log
         // entry is for afterwards: a hang that leaves no trace has to be caught
         // in the act to be diagnosed at all.
@@ -408,6 +409,27 @@ final class AppController {
 
         Task {
             let samples = await recorder.stop()
+            let seconds = Double(samples.count) / AudioRecorder.targetSampleRate
+
+            // The one number that separates "the microphone gave us nothing"
+            // from "the transcriber did nothing with it". Without it, both
+            // arrive as the same unhelpful error.
+            Log.info(String(format: "audio: finishing with %.2f s captured", seconds))
+
+            // A recording that the hardware ended before it produced anything
+            // usable is not a recording the user cut short, and saying "too
+            // short" sends them off to speak for longer at a microphone that is
+            // not listening. Observed with AirPods over Bluetooth on macOS 26.6,
+            // where selecting them as the input never yields a microphone
+            // stream at all.
+            if recorder.endedByConfigurationChange, seconds < Transcriber.minimumSeconds {
+                Log.error("audio: input device produced no usable audio before reconfiguring")
+                fail("No audio came from the current input device. If it is a Bluetooth "
+                     + "headset, macOS may not be providing a microphone for it — pick a "
+                     + "different input in System Settings > Sound > Input.")
+                return
+            }
+
             do {
                 let output = try await transcriber.transcribe(samples: samples)
                 guard !output.text.isEmpty else {

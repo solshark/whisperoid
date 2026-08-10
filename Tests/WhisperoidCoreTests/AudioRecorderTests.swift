@@ -130,6 +130,67 @@ struct AudioRecorderTests {
         #expect(fired == false, "an idle device change must not end a recording that is not running")
     }
 
+    // MARK: - Configuration changes while recording
+    //
+    // macOS 26.6 posts a configuration change immediately after the engine
+    // starts, before any audio has been delivered. Acting on it ended every
+    // recording at zero seconds, and the transcriber rejected all of them as too
+    // short to transcribe.
+    //
+    // These feed at 48 kHz rather than 16 kHz because the durations have to be
+    // accurate: converting 16 kHz to a 16 kHz target takes a pass-through path
+    // in AVAudioConverter that stops at 4096 frames, so a single large buffer
+    // arrives as 0.256 s whatever was put in. Real hardware presents 44.1 or
+    // 48 kHz and converts faithfully, and a real tap delivers 4096 frames at a
+    // time, which is exactly the cap — so nothing is lost in the application.
+
+    /// Recording and dictating are told apart by why the recording ended, not
+    /// by how long it was, because the two failures look identical from the
+    /// outside: both hand back almost no audio.
+    ///
+    /// Observed with AirPods Max on macOS 26.6. Selecting them as the input
+    /// never produces a microphone stream — CoreAudio reports no input streams
+    /// for the process and renegotiates the Bluetooth profile every 800 ms —
+    /// so the recording ends immediately with nothing in it. Reporting that as
+    /// "too short to transcribe" sends the user off to speak for longer at a
+    /// device that was never listening.
+    @Test("A recording ended by the hardware is distinguishable from a short one")
+    func configurationChangeIsRecordedAsTheReasonForEnding() {
+        let recorder = AudioRecorder()
+        recorder.setRunningForTesting(true)
+
+        #expect(recorder.endedByConfigurationChange == false, "nothing has happened yet")
+
+        recorder.handleConfigurationChange()
+
+        #expect(recorder.endedByConfigurationChange, "the reason the recording ended was lost")
+    }
+
+    /// The negative control. A recording the user simply ended must not be
+    /// reported as a hardware failure, or the advice to change input device
+    /// appears every time someone taps the shortcut twice.
+    @Test("A recording the user ends is not blamed on the hardware")
+    func userEndedRecordingIsNotBlamedOnHardware() async {
+        let recorder = AudioRecorder()
+        recorder.setRunningForTesting(true)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.5)
+
+        _ = await recorder.stop()
+
+        #expect(recorder.endedByConfigurationChange == false, "a normal recording was blamed on the hardware")
+    }
+
+    /// A change while idle is not a recording ending, so it must not leave the
+    /// flag set for the next recording to trip over.
+    @Test("A configuration change while idle does not mark a recording as ended by it")
+    func idleConfigurationChangeLeavesTheReasonUnset() {
+        let recorder = AudioRecorder()
+
+        recorder.handleConfigurationChange()
+
+        #expect(recorder.endedByConfigurationChange == false)
+    }
+
     @Test("Silence produces a level of zero and speech does not")
     func levelsTrackAmplitude() {
         let quiet = AudioRecorder()
