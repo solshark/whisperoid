@@ -104,33 +104,9 @@ struct AudioRecorderTests {
         #expect(afterBuiltIn > afterHeadset + 0.4, "audio from the second device was dropped")
     }
 
-    @Test("A configuration change while idle does not discard subsequent audio")
-    func survivesConfigurationChangeWhileIdle() {
-        let recorder = AudioRecorder()
 
-        feed(recorder, channels: Self.headset.channels, sampleRate: Self.headset.sampleRate, seconds: 0.5)
-        let before = recorder.recordedSeconds
 
-        // The device goes away between recordings, which is the case that was
-        // never observed at all before the fix.
-        recorder.handleConfigurationChange()
-
-        feed(recorder, channels: Self.builtIn.channels, sampleRate: Self.builtIn.sampleRate, seconds: 0.5)
-        #expect(recorder.recordedSeconds > before + 0.4)
-    }
-
-    @Test("A configuration change while idle does not invoke the recording callback")
-    func idleConfigurationChangeDoesNotFinishARecording() {
-        let recorder = AudioRecorder()
-        nonisolated(unsafe) var fired = false
-        recorder.onConfigurationChange = { fired = true }
-
-        recorder.handleConfigurationChange()
-
-        #expect(fired == false, "an idle device change must not end a recording that is not running")
-    }
-
-    // MARK: - Configuration changes while recording
+    // MARK: - Losing the input device
     //
     // macOS 26.6 posts a configuration change immediately after the engine
     // starts, before any audio has been delivered. Acting on it ended every
@@ -144,51 +120,34 @@ struct AudioRecorderTests {
     // 48 kHz and converts faithfully, and a real tap delivers 4096 frames at a
     // time, which is exactly the cap — so nothing is lost in the application.
 
-    /// Recording and dictating are told apart by why the recording ended, not
-    /// by how long it was, because the two failures look identical from the
-    /// outside: both hand back almost no audio.
-    ///
-    /// Observed with AirPods Max on macOS 26.6. Selecting them as the input
-    /// never produces a microphone stream — CoreAudio reports no input streams
-    /// for the process and renegotiates the Bluetooth profile every 800 ms —
-    /// so the recording ends immediately with nothing in it. Reporting that as
-    /// "too short to transcribe" sends the user off to speak for longer at a
-    /// device that was never listening.
-    @Test("A recording ended by the hardware is distinguishable from a short one")
-    func configurationChangeIsRecordedAsTheReasonForEnding() {
+
+    /// With the change no longer ending a recording, a device that has genuinely
+    /// gone away has to be noticed some other way. Audio arriving is the thing
+    /// that actually matters, so that is what is measured.
+    @Test("Audio arriving resets the stall clock")
+    func audioArrivingResetsTheStallClock() async throws {
         let recorder = AudioRecorder()
-        recorder.setRunningForTesting(true)
 
-        #expect(recorder.endedByConfigurationChange == false, "nothing has happened yet")
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2)
+        let immediatelyAfter = recorder.secondsSinceAudio
+        #expect(immediatelyAfter < 0.1, "a buffer that just arrived reads as stale")
 
-        recorder.handleConfigurationChange()
+        try await Task.sleep(for: .milliseconds(300))
+        let later = recorder.secondsSinceAudio
+        #expect(later > 0.2, "the clock did not advance while no audio arrived")
 
-        #expect(recorder.endedByConfigurationChange, "the reason the recording ended was lost")
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2)
+        #expect(recorder.secondsSinceAudio < later, "fresh audio did not reset the clock")
     }
 
-    /// The negative control. A recording the user simply ended must not be
-    /// reported as a hardware failure, or the advice to change input device
-    /// appears every time someone taps the shortcut twice.
-    @Test("A recording the user ends is not blamed on the hardware")
-    func userEndedRecordingIsNotBlamedOnHardware() async {
-        let recorder = AudioRecorder()
-        recorder.setRunningForTesting(true)
-        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.5)
-
-        _ = await recorder.stop()
-
-        #expect(recorder.endedByConfigurationChange == false, "a normal recording was blamed on the hardware")
-    }
-
-    /// A change while idle is not a recording ending, so it must not leave the
-    /// flag set for the next recording to trip over.
-    @Test("A configuration change while idle does not mark a recording as ended by it")
-    func idleConfigurationChangeLeavesTheReasonUnset() {
+    /// A recorder that has never been started is not stalled — it is idle. The
+    /// caller only consults this while recording, and reporting a huge age
+    /// before the first recording would make the very first one look dead.
+    @Test("An idle recorder reports no stall")
+    func idleRecorderReportsNoStall() {
         let recorder = AudioRecorder()
 
-        recorder.handleConfigurationChange()
-
-        #expect(recorder.endedByConfigurationChange == false)
+        #expect(recorder.secondsSinceAudio == 0)
     }
 
     @Test("Silence produces a level of zero and speech does not")
@@ -211,39 +170,7 @@ struct AudioRecorderTests {
         #expect(recorder.recentLevels.count == AudioRecorder.levelHistoryLength)
     }
 
-    /// A long-lived engine caches the input hardware's format and is only told
-    /// about changes while it is running, so an engine that sat idle across a
-    /// sleep or a headset connecting holds a format for hardware that is no
-    /// longer there. The next recording then fails with -10868. Replacing the
-    /// engine is the only way to get a current answer.
-    @Test("Each recording gets a new engine rather than reusing a stale one")
-    func renewEngineReplacesTheEngine() {
-        let recorder = AudioRecorder()
-        let original = recorder.engineIdentity
 
-        recorder.renewEngine()
-
-        #expect(recorder.engineIdentity != original, "the engine was reused, so its cached format survives")
-    }
-
-    /// The observer is registered against a specific engine instance. Replacing
-    /// the engine without re-registering leaves the new one watched by nobody,
-    /// which is silent and would only show up as a recording that fails to end
-    /// itself when a device is unplugged.
-    @Test("The configuration observer follows the engine when it is replaced")
-    func observerFollowsRenewedEngine() async throws {
-        let recorder = AudioRecorder()
-        recorder.renewEngine()
-
-        let before = recorder.configurationChangesHandled
-        recorder.postConfigurationChangeForTesting()
-        try await Task.sleep(for: .milliseconds(200))
-
-        #expect(
-            recorder.configurationChangesHandled == before + 1,
-            "the replacement engine's configuration changes reach nobody"
-        )
-    }
 
     @Test("Stopping returns the captured audio and clears the buffer")
     func stopClearsState() async {
@@ -295,11 +222,11 @@ struct AudioRecorderTests {
 
         #expect(recorder.engineGenerationForTesting == before + 1, "the hung queue is still in use")
 
-        // The abandoned queue has several seconds left to run. Reaching the
-        // engine at all proves this is no longer that queue: going through the
-        // old one would block until its sleep finished.
+        // The abandoned queue has several seconds left to run. Getting through
+        // the queue at all proves this is no longer that queue: the old one
+        // would block until its sleep finished.
         let started = Date()
-        _ = recorder.configurationChangesHandled
+        recorder.setRunningForTesting(false)
         let elapsed = Date().timeIntervalSince(started)
 
         #expect(elapsed < 1, "the replacement queue is still stuck behind the abandoned one")
@@ -365,26 +292,4 @@ struct AudioRecorderTests {
         #expect(recorder.recordedSeconds > 0.2, "the current engine's audio was dropped too")
     }
 
-    /// The engine, the running flag and the observer are all reachable from the
-    /// audio hardware's thread as well as from the caller's, and none of them
-    /// are covered by the sample lock — they are kept safe by being confined to
-    /// one serial queue instead.
-    ///
-    /// Confinement is invisible: a change that moves an engine call back off the
-    /// queue reintroduces the race silently, and the symptom is a hang in
-    /// CoreAudio hours later rather than a failure here. This hammers the two
-    /// paths that arrive from different threads in the real application.
-    @Test("Renewal and configuration changes can interleave without corrupting state")
-    func concurrentRenewalAndConfigurationChanges() async {
-        let recorder = AudioRecorder()
-
-        await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<20 {
-                group.addTask { recorder.renewEngine() }
-                group.addTask { recorder.handleConfigurationChange() }
-            }
-        }
-
-        #expect(recorder.configurationChangesHandled == 20)
-    }
 }

@@ -100,16 +100,40 @@ public final class AudioRecorder: @unchecked Sendable {
     /// responsive precisely when the audio queue does not.
     private let watchdogQueue = DispatchQueue(label: "com.solshark.whisperoid.audio-engine-watchdog")
 
-    /// Replaced for every recording. See `renewEngine()`. Confined to
-    /// `engineQueue`, as are `isRunning`, `configurationObserver` and
-    /// `configurationChangeCount`.
-    private var engine = AVAudioEngine()
+    /// Rebuilt for every recording, so each one resolves the input device as it
+    /// stands rather than as it was. Confined to `engineQueue`, as is
+    /// `isRunning`.
+    ///
+    /// `AVCaptureSession` rather than `AVAudioEngine` deliberately. The engine
+    /// does not open the input device: it opens `CADefaultDeviceAggregate-<pid>`,
+    /// a wrapper CoreAudio builds once per process to follow the default input.
+    /// Built while the default cannot supply a microphone — a Bluetooth headset
+    /// in its music profile cannot — that wrapper comes up with no input streams
+    /// and stays broken for the life of the process. Rebuilding the engine does
+    /// not help, because the replacement binds to the same wrapper: four rebuilds
+    /// in sixteen seconds all reported the correct 24 kHz headset format and not
+    /// one delivered a buffer. Only relaunching the application cleared it.
+    ///
+    /// A capture session has no such wrapper. It reads the same device the
+    /// engine could not, in the same state, at the same moment.
+    private var session: AVCaptureSession?
     private var isRunning = false
-    private var configurationObserver: NSObjectProtocol?
-    private var configurationChangeCount = 0
+
+    /// Receives sample buffers off the capture session. Held because the output
+    /// keeps only a weak reference to it.
+    private var sampleReceiver: SampleReceiver?
+
+    /// Delivers capture callbacks. Separate from `engineQueue` so a sample
+    /// arriving never waits behind a device operation.
+    private let sampleQueue = DispatchQueue(label: "com.solshark.whisperoid.audio-samples")
 
     private let lock = NSLock()
-    private var configurationChangeEndedRecording = false
+
+    /// Uptime, not wall clock: this measures a few seconds of elapsed time and
+    /// must not be disturbed by the system clock being adjusted underneath it.
+    private var lastAudioUptime: UInt64?
+    private var reportedFirstBuffer = false
+    private var reportedDrop = false
     private var samples: [Float] = []
     private var level: Float = 0
     private var levels: [Float] = []
@@ -121,30 +145,34 @@ public final class AudioRecorder: @unchecked Sendable {
     private var cachedConverter: AVAudioConverter?
     private var cachedConverterFormat: AVAudioFormat?
 
-    /// Called when the audio hardware configuration changes while recording,
-    /// which happens when a device is connected, removed, or made the default.
+    /// How long since the tap last delivered audio, measured from the start of
+    /// the recording until the first buffer arrives.
     ///
-    /// Capture cannot meaningfully continue across the change — the tap does not
-    /// survive it — so the recording is finished with whatever it has rather
-    /// than left running against hardware that is no longer delivering.
-    ///
-    /// Invoked on `engineQueue`, so an implementation that touches UI has to hop
-    /// to the main actor itself.
-    public var onConfigurationChange: (@Sendable () -> Void)?
-
-    /// Whether the recording that just ended was cut short by the input
-    /// hardware reconfiguring rather than by the user. Read after `stop()`.
-    ///
-    /// The distinction matters because the two produce identical symptoms. A
-    /// device that never delivers a microphone stream yields a recording of
-    /// almost nothing, which is indistinguishable from someone tapping the
-    /// shortcut twice by accident — and reporting the second when it was the
-    /// first sends the user looking in entirely the wrong place.
-    public var endedByConfigurationChange: Bool {
+    /// This is what distinguishes a device that has stopped from a device that
+    /// has not started yet. A Bluetooth headset needs a moment to switch out of
+    /// its music profile before it can supply a microphone at all — measured at
+    /// 0.377 s for AirPods Max on macOS 26.6 — and during that window a
+    /// recording looks identical to one whose device has been unplugged.
+    public var secondsSinceAudio: TimeInterval {
         lock.lock()
         defer { lock.unlock() }
-        return configurationChangeEndedRecording
+        guard let lastAudioUptime else { return 0 }
+        let elapsed = DispatchTime.now().uptimeNanoseconds &- lastAudioUptime
+        return Double(elapsed) / 1_000_000_000
     }
+
+    /// Called with one-line notes about the capture path: which device the
+    /// engine actually opened, what format it presents, when the first buffer
+    /// arrived, and every point at which audio is dropped.
+    ///
+    /// Those drop points were previously silent returns, which is why a
+    /// recording that captured nothing looked identical to one that captured
+    /// nothing for a completely different reason.
+    ///
+    /// Called from the audio thread as well as the audio queue, so an
+    /// implementation must be cheap and thread-safe. Emitted at most once per
+    /// recording for each kind of event.
+    public var onDiagnostic: (@Sendable (String) -> Void)?
 
     /// Called with the name of the operation that exceeded `engineTimeout`.
     ///
@@ -155,18 +183,6 @@ public final class AudioRecorder: @unchecked Sendable {
     ///
     /// Invoked on the watchdog queue.
     public var onEngineTimeout: (@Sendable (String) -> Void)?
-
-    /// Counts handled configuration changes so tests can prove the observer is
-    /// attached to the engine currently in use.
-    var configurationChangesHandled: Int {
-        currentQueue.sync { configurationChangeCount }
-    }
-
-    /// Identifies the engine in use, so tests can prove `renewEngine()` really
-    /// replaced it rather than reconfiguring the old one.
-    var engineIdentity: ObjectIdentifier {
-        currentQueue.sync { ObjectIdentifier(engine) }
-    }
 
     /// Forces the running flag. Starting for real needs hardware, so this is the
     /// only way to reach the branches that apply only mid-recording.
@@ -196,16 +212,10 @@ public final class AudioRecorder: @unchecked Sendable {
     public init(engineTimeout: TimeInterval = AudioRecorder.defaultEngineTimeout) {
         self.engineTimeout = engineTimeout
 
-        // Direct rather than through the queue: nothing else can reach this
-        // object yet, and the first dispatch onto `engineQueue` orders this
-        // write ahead of anything the queue goes on to do.
-        observeConfigurationChangesOnQueue()
     }
 
     deinit {
-        if let configurationObserver {
-            NotificationCenter.default.removeObserver(configurationObserver)
-        }
+        session?.stopRunning()
     }
 
     // MARK: - Deadlines
@@ -332,10 +342,9 @@ public final class AudioRecorder: @unchecked Sendable {
             // Cleared before the engine is replaced: a hung `stop()` never got
             // to do it, and leaving it set would make the next `start()` decide
             // it was already recording and return to a caller that then waits
-            // for audio from an engine that no longer exists.
+            // for audio from a session that no longer exists.
             self.isRunning = false
-            self.engine = AVAudioEngine()
-            self.observeConfigurationChangesOnQueue()
+            self.tearDownSessionOnQueue()
         }
     }
 
@@ -344,108 +353,6 @@ public final class AudioRecorder: @unchecked Sendable {
     // Everything from here to the end of the section runs on `engineQueue`. The
     // `OnQueue` methods assume they are already there; the wrappers above them
     // are the way in from anywhere else.
-
-    /// Attaches the configuration-change observer to the current engine.
-    ///
-    /// The notification is posted per engine instance, so this has to be redone
-    /// every time the engine is replaced or the new one is watched by nobody.
-    private func observeConfigurationChangesOnQueue() {
-        if let configurationObserver {
-            NotificationCenter.default.removeObserver(configurationObserver)
-        }
-        // `queue: nil` delivers on whichever thread posted, which for the real
-        // notification is one of CoreAudio's. The handler is hopped onto
-        // `engineQueue` explicitly instead. Asking for `.main` here would put
-        // an engine call back on the main thread, which is the whole problem.
-        configurationObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: nil
-        ) { [weak self] _ in
-            guard let self else { return }
-
-            // Tagged with the generation it was scheduled under for the same
-            // reason `start()` and `stop()` are: if this queue is written off
-            // before the block runs, the block must not go on to touch state a
-            // newer queue has taken over.
-            let (queue, generation) = currentQueueAndGeneration()
-            queue.async {
-                guard self.isCurrent(generation) else { return }
-                self.handleConfigurationChangeOnQueue()
-            }
-        }
-    }
-
-    /// Posts the configuration-change notification for the engine currently in
-    /// use, so a test can verify the observer is attached to it. The real
-    /// notification comes from AVAudioEngine and cannot be provoked on demand.
-    func postConfigurationChangeForTesting() {
-        currentQueue.sync {
-            NotificationCenter.default.post(
-                name: .AVAudioEngineConfigurationChange,
-                object: engine
-            )
-        }
-    }
-
-    /// Discards the engine and builds a fresh one.
-    ///
-    /// AVAudioEngine reads the input hardware's format when it is created and
-    /// caches it. It announces later changes through
-    /// `AVAudioEngineConfigurationChange`, but only while it is *running*, so an
-    /// engine sitting idle between recordings is told nothing: a headset
-    /// connecting, a device disappearing, or a sleep and wake cycle all pass
-    /// unnoticed. The cached format then describes hardware that is no longer
-    /// there, and the next recording fails with -10868, formats don't match.
-    ///
-    /// Observing harder does not fix this because there is no notification to
-    /// observe. A new engine queries the hardware as it stands, which is the
-    /// only reliable answer, and building one costs microseconds.
-    func renewEngine() {
-        currentQueue.sync { renewEngineOnQueue() }
-    }
-
-    private func renewEngineOnQueue() {
-        engine.stop()
-        engine = AVAudioEngine()
-        observeConfigurationChangesOnQueue()
-    }
-
-    /// Responds to a hardware configuration change.
-    ///
-    /// Whether recording or idle, the cached converter is dropped: it was built
-    /// for a format that is no longer guaranteed to be what the hardware
-    /// delivers. When idle the engine is also stopped, so the next `start()`
-    /// attaches to the device that is actually present rather than to whatever
-    /// was there when the engine last looked.
-    func handleConfigurationChange() {
-        currentQueue.sync { handleConfigurationChangeOnQueue() }
-    }
-
-    private func handleConfigurationChangeOnQueue() {
-        configurationChangeCount += 1
-
-        lock.lock()
-        cachedConverter = nil
-        cachedConverterFormat = nil
-        lock.unlock()
-
-        guard isRunning else {
-            engine.stop()
-            return
-        }
-
-        // Noted before the callback, so whoever finishes the recording can tell
-        // the user why it ended. Rebuilding capture here was tried and removed:
-        // a tap does not survive the change, but restarting the engine is what
-        // provokes the next change on a device that cannot supply a microphone,
-        // so it rebuilt five times, captured 0.17 s, and failed anyway.
-        lock.lock()
-        configurationChangeEndedRecording = true
-        lock.unlock()
-
-        onConfigurationChange?()
-    }
 
     // MARK: - Capture
 
@@ -503,15 +410,19 @@ public final class AudioRecorder: @unchecked Sendable {
 
         _ = drainSamples()
 
-        lock.lock()
-        configurationChangeEndedRecording = false
-        lock.unlock()
-
         try beginCaptureOnQueue(generation: generation)
 
         guard isCurrent(generation) else {
             throw RecorderError.timedOut("start recording")
         }
+
+        // Started here rather than on entry, so a slow engine build is not
+        // counted against the device as a stall.
+        lock.lock()
+        lastAudioUptime = DispatchTime.now().uptimeNanoseconds
+        reportedFirstBuffer = false
+        reportedDrop = false
+        lock.unlock()
 
         isRunning = true
     }
@@ -528,53 +439,231 @@ public final class AudioRecorder: @unchecked Sendable {
             throw RecorderError.engineFailed("could not build a 16 kHz mono format")
         }
 
-        // Before anything else, so the format below is read from the hardware
-        // that is present now rather than whatever was there last time.
-        renewEngineOnQueue()
+        tearDownSessionOnQueue()
 
-        // Held locally for the rest of the method. If this attempt is abandoned
-        // partway through, `self.engine` becomes a different object, and the
-        // teardown below has to act on the one it actually built.
-        let engine = self.engine
+        guard let device = AVCaptureDevice.default(for: .audio) else {
+            throw RecorderError.engineFailed("no audio input device is available")
+        }
 
-        // The call that hangs. Everything above is arithmetic; this asks
-        // CoreAudio to enumerate the hardware, and on a bad day it never
-        // answers.
-        let input = engine.inputNode
+        let session = AVCaptureSession()
+        session.beginConfiguration()
+
+        let deviceInput: AVCaptureDeviceInput
+        do {
+            deviceInput = try AVCaptureDeviceInput(device: device)
+        } catch {
+            session.commitConfiguration()
+            throw RecorderError.engineFailed(error.localizedDescription)
+        }
+        guard session.canAddInput(deviceInput) else {
+            session.commitConfiguration()
+            throw RecorderError.engineFailed("the input device could not be added to the session")
+        }
+        session.addInput(deviceInput)
+
+        let output = AVCaptureAudioDataOutput()
+
+        // Float32 asked for explicitly rather than taking the device's word for
+        // it. The converter can handle whatever arrives, but a predictable
+        // format keeps the common path free of surprises.
+        output.audioSettings = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+
+        let receiver = SampleReceiver { [weak self] buffer in
+            self?.handleTapBuffer(buffer, to: targetFormat, generation: generation)
+        }
+        output.setSampleBufferDelegate(receiver, queue: sampleQueue)
+
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            throw RecorderError.engineFailed("the audio output could not be added to the session")
+        }
+        session.addOutput(output)
+        session.commitConfiguration()
 
         // Whoever was waiting has already been handed a timeout and a new queue
-        // owns the engine now. Carrying on would install a tap that feeds a
-        // buffer belonging to a recording this one knows nothing about.
+        // owns capture now. Starting would deliver audio into a recording this
+        // attempt knows nothing about.
         guard isCurrent(generation) else {
             throw RecorderError.timedOut("start recording")
         }
 
-        // A tap left behind by an earlier failure makes `installTap` raise, so
-        // clear one before installing. Removing a tap that is not there does
-        // nothing and is safe.
-        input.removeTap(onBus: 0)
+        self.session = session
+        self.sampleReceiver = receiver
 
-        // The format is deliberately nil, which means "whatever this bus is
-        // actually producing".
-        //
-        // Passing a format read from the node instead bakes in a value the
-        // engine has cached, and that cache goes stale the moment the input
-        // device changes. `installTap` then raises an Objective-C exception,
-        // which Swift cannot catch: it unwinds through Swift frames without
-        // running any cleanup and leaves the concurrency runtime inconsistent.
-        // The process survives, appears to do nothing, and then dies at the next
-        // main-actor isolation check somewhere entirely unrelated.
-        input.installTap(onBus: 0, bufferSize: 4_096, format: nil) { [weak self] buffer, _ in
-            self?.handleTapBuffer(buffer, to: targetFormat, generation: generation)
+        onDiagnostic?("capture: device=\(device.localizedName) [\(device.uniqueID)]")
+
+        // Blocking, and on a bad day slow: this is where CoreAudio is asked for
+        // the hardware. It runs under the queue's deadline for that reason.
+        session.startRunning()
+
+        guard session.isRunning else {
+            tearDownSessionOnQueue()
+            throw RecorderError.engineFailed("the capture session would not start")
         }
 
-        do {
-            engine.prepare()
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            throw RecorderError.engineFailed(error.localizedDescription)
+        onDiagnostic?("capture: session running")
+    }
+
+    /// Stops and forgets the session, if there is one.
+    private func tearDownSessionOnQueue() {
+        guard let session else { return }
+        if session.isRunning { session.stopRunning() }
+        for input in session.inputs { session.removeInput(input) }
+        for output in session.outputs { session.removeOutput(output) }
+        self.session = nil
+        sampleReceiver = nil
+    }
+
+    /// Receives sample buffers from the capture session and hands them on as
+    /// `AVAudioPCMBuffer`, which is what the conversion path already speaks.
+    ///
+    /// The output holds this only weakly, so the recorder keeps it alive.
+    private final class SampleReceiver: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+        private let onBuffer: @Sendable (AVAudioPCMBuffer) -> Void
+
+        init(onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void) {
+            self.onBuffer = onBuffer
         }
+
+        func captureOutput(_ output: AVCaptureOutput,
+                           didOutput sampleBuffer: CMSampleBuffer,
+                           from connection: AVCaptureConnection) {
+            guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+                  let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(description),
+                  let format = AVAudioFormat(streamDescription: streamDescription)
+            else { return }
+
+            let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
+            guard frames > 0,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
+                  let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer)
+            else { return }
+            buffer.frameLength = frames
+
+            // Copied, not repointed.
+            //
+            // `CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer` fills a
+            // buffer list by pointing its `mData` at the block buffer's memory.
+            // Handed `AVAudioPCMBuffer`'s own list, it therefore redirects the
+            // pointers while leaving the buffer's actual allocation — the one
+            // every accessor reads from — untouched and full of zeros. Capture
+            // then looks perfect and every sample is silent.
+            let bytesPerFrame = Int(format.streamDescription.pointee.mBytesPerFrame)
+            guard bytesPerFrame > 0,
+                  let destination = buffer.mutableAudioBufferList.pointee.mBuffers.mData
+            else { return }
+
+            let available = CMBlockBufferGetDataLength(blockBuffer)
+            let capacity = Int(frames) * bytesPerFrame
+            let length = min(available, capacity)
+            guard length > 0,
+                  CMBlockBufferCopyDataBytes(blockBuffer,
+                                             atOffset: 0,
+                                             dataLength: length,
+                                             destination: destination) == noErr
+            else { return }
+
+            buffer.frameLength = AVAudioFrameCount(length / bytesPerFrame)
+            buffer.mutableAudioBufferList.pointee.mBuffers.mDataByteSize = UInt32(length)
+
+            onBuffer(buffer)
+        }
+    }
+
+    /// Describes the device the input unit is actually bound to, which is not
+    /// necessarily the one the user believes is selected.
+    private static func describeDevice(of node: AVAudioInputNode) -> String {
+        guard let unit = node.audioUnit else { return "unknown (no audio unit)" }
+
+        var device = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                          kAudioUnitScope_Global, 0, &device, &size)
+        guard status == noErr else { return "unknown (status \(status))" }
+
+        var nameAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioObjectPropertyName,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var name: CFString = "" as CFString
+        var nameSize = UInt32(MemoryLayout<CFString>.size)
+        let named = AudioObjectGetPropertyData(device, &nameAddress, 0, nil, &nameSize, &name)
+
+        var transportAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transport: UInt32 = 0
+        var transportSize = UInt32(MemoryLayout<UInt32>.size)
+        AudioObjectGetPropertyData(device, &transportAddress, 0, nil, &transportSize, &transport)
+
+        let kind: String
+        switch transport {
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: kind = "bluetooth"
+        case kAudioDeviceTransportTypeUSB: kind = "usb"
+        case kAudioDeviceTransportTypeBuiltIn: kind = "built-in"
+        case kAudioDeviceTransportTypeAggregate: kind = "aggregate"
+        case kAudioDeviceTransportTypeVirtual: kind = "virtual"
+        default: kind = "transport \(transport)"
+        }
+
+        return "id=\(device) \(named == noErr ? (name as String) : "unnamed") [\(kind)]"
+    }
+
+    private static func describe(_ format: AVAudioFormat) -> String {
+        "\(Int(format.sampleRate))Hz/\(format.channelCount)ch "
+            + "interleaved=\(format.isInterleaved) common=\(format.commonFormat.rawValue)"
+    }
+
+    /// Tears the engine down without ending the recording, so the hardware gets
+    /// a moment to itself before capture is built again.
+    ///
+    /// Separate from `stop()` because the recording is still in progress and the
+    /// audio already captured must survive. Paired with `resumeCapture()`.
+    public func suspendCapture() async {
+        _ = try? await withEngineQueue("suspend capture") { _ in
+            self.suspendCaptureOnQueue()
+        }
+    }
+
+    private func suspendCaptureOnQueue() {
+        guard isRunning else { return }
+
+        tearDownSessionOnQueue()
+        onDiagnostic?("capture: suspended")
+    }
+
+    /// Builds capture again for a recording that is still running, leaving the
+    /// audio already recorded in place.
+    ///
+    /// The gap between this and `suspendCapture()` is the caller's to choose,
+    /// and it matters: stopping a USB or Bluetooth input leaves the kernel
+    /// finishing its cleanup asynchronously, and a capture started inside that
+    /// window is killed by the cleanup of the one before it.
+    public func resumeCapture() async throws {
+        try await withEngineQueue("resume capture") { generation in
+            try self.resumeCaptureOnQueue(generation: generation)
+        }
+    }
+
+    private func resumeCaptureOnQueue(generation: Int) throws {
+        guard isRunning else { return }
+
+        try beginCaptureOnQueue(generation: generation)
+
+        lock.lock()
+        lastAudioUptime = DispatchTime.now().uptimeNanoseconds
+        reportedFirstBuffer = false
+        reportedDrop = false
+        lock.unlock()
     }
 
     /// Stops capture and returns everything recorded, clearing the buffer.
@@ -598,14 +687,12 @@ public final class AudioRecorder: @unchecked Sendable {
     private func stopOnQueue(generation: Int) -> [Float] {
         guard isRunning else { return [] }
 
-        // Cleared first. If the two calls below hang, this recording is over as
+        // Cleared first. If the teardown below hangs, this recording is over as
         // far as the rest of the object is concerned, and the next `start()`
-        // must not mistake a dead engine for a live one.
+        // must not mistake a dead session for a live one.
         isRunning = false
 
-        let engine = self.engine
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        tearDownSessionOnQueue()
 
         // The caller has already been given the samples by the timeout path.
         // Draining again here would hand back an empty array and lose nothing,
@@ -671,17 +758,53 @@ public final class AudioRecorder: @unchecked Sendable {
     /// Named rather than written inline at the call site so that a test can
     /// drive it: the tap itself only exists once real hardware is attached.
     func handleTapBuffer(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat, generation: Int) {
-        guard isCurrent(generation) else { return }
+        guard isCurrent(generation) else {
+            reportDropOnce("tap fired for an abandoned engine (generation \(generation))")
+            return
+        }
+
+        lock.lock()
+        let first = !reportedFirstBuffer
+        reportedFirstBuffer = true
+        lock.unlock()
+
+        if first {
+            onDiagnostic?("capture: first buffer after \(String(format: "%.3f", secondsSinceAudio)) s, "
+                          + "\(Self.describe(buffer.format)) frames=\(buffer.frameLength)")
+        }
+
         appendConverted(buffer, to: targetFormat)
     }
 
+    /// Reports the first way audio was lost in this recording and then stays
+    /// quiet, because the tap fires many times a second.
+    private func reportDropOnce(_ reason: String) {
+        lock.lock()
+        let alreadyReported = reportedDrop
+        reportedDrop = true
+        lock.unlock()
+
+        guard !alreadyReported else { return }
+        onDiagnostic?("capture: DROPPING AUDIO — \(reason)")
+    }
+
     func appendConverted(_ buffer: AVAudioPCMBuffer, to targetFormat: AVAudioFormat) {
-        guard buffer.frameLength > 0 else { return }
-        guard let converter = converter(from: buffer.format, to: targetFormat) else { return }
+        guard buffer.frameLength > 0 else {
+            reportDropOnce("tap delivered an empty buffer")
+            return
+        }
+        guard let converter = converter(from: buffer.format, to: targetFormat) else {
+            reportDropOnce("no converter from \(Self.describe(buffer.format)) "
+                           + "to \(Self.describe(targetFormat))")
+            return
+        }
 
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1_024
-        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
+        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else {
+            reportDropOnce("could not allocate a \(capacity) frame output buffer")
+            return
+        }
 
         // The converter pulls input through this block; supply the buffer once,
         // then report that no more data is available for this conversion pass.
@@ -702,10 +825,18 @@ public final class AudioRecorder: @unchecked Sendable {
             return inputBuffer
         }
 
-        guard conversionError == nil,
-              output.frameLength > 0,
-              let channel = output.floatChannelData
-        else { return }
+        guard conversionError == nil else {
+            reportDropOnce("conversion failed: \(conversionError!)")
+            return
+        }
+        guard output.frameLength > 0 else {
+            reportDropOnce("conversion produced no frames from \(buffer.frameLength) in")
+            return
+        }
+        guard let channel = output.floatChannelData else {
+            reportDropOnce("converted buffer has no float channel data")
+            return
+        }
 
         let frameCount = Int(output.frameLength)
         let converted = Array(UnsafeBufferPointer(start: channel[0], count: frameCount))
@@ -717,6 +848,7 @@ public final class AudioRecorder: @unchecked Sendable {
         let rms = (sumOfSquares / Float(frameCount)).squareRoot()
 
         lock.lock()
+        lastAudioUptime = DispatchTime.now().uptimeNanoseconds
         samples.append(contentsOf: converted)
         level = rms
         levels.append(rms)
