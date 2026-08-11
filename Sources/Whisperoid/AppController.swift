@@ -424,6 +424,21 @@ final class AppController {
             // not listening. Observed with AirPods over Bluetooth on macOS 26.6,
             // where selecting them as the input never yields a microphone
             // stream at all.
+            // Buffers arrived, on time and in the right format, and every
+            // sample in them was zero. That is not a quiet room, it is a device
+            // handing over silence — seen when a Bluetooth headset is left in
+            // its music profile while still advertising a microphone. Nothing
+            // downstream can do anything useful with it, and "nothing was
+            // transcribed" sends the user looking at the wrong thing.
+            if peak < Self.silenceFloor, seconds >= Transcriber.minimumSeconds {
+                Log.error(String(format: "audio: %.2f s captured but every sample was silent", seconds))
+                fail("The input device recorded only silence. If it is a Bluetooth headset, "
+                     + "macOS may have left it in music mode: stop any audio that is playing, "
+                     + "then disconnect and reconnect it, or pick another input in "
+                     + "System Settings > Sound > Input.")
+                return
+            }
+
             if stalled, seconds < Transcriber.minimumSeconds {
                 Log.error("audio: input device delivered nothing for "
                           + "\(Self.audioStallSeconds) s; giving up on this recording")
@@ -655,6 +670,12 @@ final class AppController {
     }
 
     // MARK: - Recording tick
+
+    /// Below this peak amplitude a recording is not quiet, it is empty.
+    ///
+    /// -100 dBFS. A muted room still measures around -60 dBFS through a real
+    /// microphone; a device that is handing over zeros measures nothing at all.
+    private static let silenceFloor: Float = 1e-5
 
     /// How long to wait for the very first buffer before concluding that the
     /// device came up dead and rebuilding capture.
