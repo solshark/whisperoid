@@ -78,8 +78,6 @@ final class AppController {
     @ObservationIgnored private var aboutWindow: HostedWindowController<AboutView>?
     @ObservationIgnored private var acknowledgementsWindow: HostedWindowController<AcknowledgementsView>?
     private var tickTimer: Timer?
-    private var captureRetries = 0
-    private var isRebuildingCapture = false
     private var silenceDetector: SilenceDetector?
     /// Nil only when the support directory cannot be created, in which case
     /// cleanup is unavailable and dictation continues without it.
@@ -360,7 +358,10 @@ final class AppController {
                 overlay.model.language = ""
                 overlay.model.duration = 0
                 overlay.model.message = ""
-                overlay.present(.recording)
+                // Not `.recording`: the device is open but may not be producing
+                // sound yet. Showing a live timer through that window is what
+                // invites the user to start talking into silence.
+                overlay.present(recorder.hasHeardAudio ? .recording : .warmingUp)
 
                 if preferences.playSounds { Sounds.playStart() }
 
@@ -454,6 +455,9 @@ final class AppController {
                     fail("Nothing was transcribed.")
                     return
                 }
+
+                Log.info(String(format: "transcribed %d characters, language %@, in %.2f s",
+                                output.text.count, output.language, output.duration))
 
                 let cleaned = await cleanup(output)
 
@@ -613,6 +617,7 @@ final class AppController {
     }
 
     private func fail(_ message: String) {
+        Log.error("failed: \(message)")
         state = .failed(message)
         overlay.model.message = message
         overlay.update(.failed)
@@ -677,27 +682,6 @@ final class AppController {
     /// microphone; a device that is handing over zeros measures nothing at all.
     private static let silenceFloor: Float = 1e-5
 
-    /// How long to wait for the very first buffer before concluding that the
-    /// device came up dead and rebuilding capture.
-    ///
-    /// A healthy start delivers its first buffer in 0.18-0.48 s, Bluetooth
-    /// included, so this is several times the normal case. The failure it
-    /// catches is not a slow start: the engine reports itself running against a
-    /// device that then never produces a single callback.
-    private static let captureWarmupSeconds: Double = 1.5
-
-    /// How long the hardware is left alone between tearing capture down and
-    /// building it again.
-    ///
-    /// Not politeness. Stopping a USB or Bluetooth input leaves the kernel
-    /// finishing cleanup asynchronously for seconds afterwards, and a capture
-    /// started inside that window is killed by the cleanup of the one before
-    /// it. Rebuilding immediately was tried and simply failed five times in a
-    /// row; the waiting is what makes a retry a retry rather than a repeat.
-    private static let captureRetryDelay: Double = 2.0
-
-    private static let maxCaptureRetries = 2
-
     /// How long a recording may go without audio before it is given up on.
     ///
     /// Has to clear the pause between starting the engine and the first buffer,
@@ -706,46 +690,8 @@ final class AppController {
     /// for a slower device without making a genuinely dead one wait long.
     private static let audioStallSeconds: Double = 3
 
-    /// Tears capture down, leaves the hardware alone for a moment, and builds it
-    /// again — without ending the recording the user is still in the middle of.
-    private func rebuildCapture() {
-        guard !isRebuildingCapture else { return }
-        isRebuildingCapture = true
-        captureRetries += 1
-        let attempt = captureRetries
-
-        Log.error(String(format: "audio: no audio after %.1f s; rebuilding capture "
-                         + "(attempt %d of %d)", Self.captureWarmupSeconds,
-                         attempt, Self.maxCaptureRetries))
-
-        Task { [weak self] in
-            guard let self else { return }
-
-            await recorder.suspendCapture()
-            try? await Task.sleep(for: .seconds(Self.captureRetryDelay))
-
-            // The user may have stopped or cancelled while the hardware was
-            // being left alone; rebuilding then would start capturing into a
-            // recording that no longer exists.
-            guard state == .recording else {
-                isRebuildingCapture = false
-                return
-            }
-
-            do {
-                try await recorder.resumeCapture()
-                Log.info("audio: capture rebuilt (attempt \(attempt))")
-            } catch {
-                Log.error("audio: rebuild failed: \(error.localizedDescription)")
-            }
-            isRebuildingCapture = false
-        }
-    }
-
     private func startTicking() {
         stopTicking()
-        captureRetries = 0
-        isRebuildingCapture = false
 
         let timer = Timer(timeInterval: Self.waveformInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -755,31 +701,18 @@ final class AppController {
                 self.overlay.model.levels = self.recorder.recentLevels
                 self.overlay.model.elapsed = self.recordedSeconds
 
+                // The device has started producing sound, so the recording is
+                // genuinely under way and the user can be invited to speak.
+                if self.overlay.model.phase == .warmingUp, self.recorder.hasHeardAudio {
+                    self.overlay.update(.recording)
+                }
+
                 if self.recordedSeconds >= Self.maximumRecordingSeconds {
                     self.finishRecording()
                     return
                 }
 
-                // A rebuild is already in flight, and it deliberately spends a
-                // couple of seconds with no capture running at all. Judging the
-                // recording dead during that window would end it precisely when
-                // it is being repaired.
-                if self.isRebuildingCapture { return }
-
-                // Nothing has ever arrived. The engine claims to be running, so
-                // waiting is not the answer — this device came up dead and has
-                // to be built again.
-                if self.recordedSeconds == 0,
-                   self.recorder.secondsSinceAudio > Self.captureWarmupSeconds {
-                    if self.captureRetries < Self.maxCaptureRetries {
-                        self.rebuildCapture()
-                    } else {
-                        self.finishRecording(stalled: true)
-                    }
-                    return
-                }
-
-                // Audio was arriving and stopped, so the device has gone. What
+                // The device has stopped answering, or never started. Whatever
                 // has already been captured is still worth transcribing.
                 if self.recorder.secondsSinceAudio > Self.audioStallSeconds {
                     self.finishRecording(stalled: true)

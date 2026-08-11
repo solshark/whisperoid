@@ -7,6 +7,10 @@ import Foundation
 final class OverlayModel {
 
     enum Phase: Equatable {
+        /// The device is open but has not produced sound yet. A Bluetooth
+        /// headset leaving its music profile takes a moment, and a recording
+        /// that looks live during it costs the user their opening words.
+        case warmingUp
         case recording
         case transcribing
         /// Only entered when post-processing is switched on. The model mode can

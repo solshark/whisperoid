@@ -108,18 +108,12 @@ struct AudioRecorderTests {
 
     // MARK: - Losing the input device
     //
-    // macOS 26.6 posts a configuration change immediately after the engine
-    // starts, before any audio has been delivered. Acting on it ended every
-    // recording at zero seconds, and the transcriber rejected all of them as too
-    // short to transcribe.
-    //
     // These feed at 48 kHz rather than 16 kHz because the durations have to be
     // accurate: converting 16 kHz to a 16 kHz target takes a pass-through path
     // in AVAudioConverter that stops at 4096 frames, so a single large buffer
     // arrives as 0.256 s whatever was put in. Real hardware presents 44.1 or
-    // 48 kHz and converts faithfully, and a real tap delivers 4096 frames at a
-    // time, which is exactly the cap — so nothing is lost in the application.
-
+    // 48 kHz and converts faithfully, and the capture session delivers small
+    // buffers, so the application never meets that cap.
 
     /// With the change no longer ending a recording, a device that has genuinely
     /// gone away has to be noticed some other way. Audio arriving is the thing
@@ -148,6 +142,41 @@ struct AudioRecorderTests {
         let recorder = AudioRecorder()
 
         #expect(recorder.secondsSinceAudio == 0)
+    }
+
+    // MARK: - Waking the device
+
+    /// A Bluetooth headset leaving its music profile delivers buffers before it
+    /// delivers sound, and those buffers are bit-exact zero. Counting them makes
+    /// the timer start at two or three seconds and hands the transcriber a block
+    /// of nothing, so they are dropped the moment real audio arrives.
+    @Test("Silence from a device that has not woken yet is discarded")
+    func warmUpSilenceIsDiscarded() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 2.0, amplitude: 0)
+        #expect(recorder.hasHeardAudio == false, "bit-exact silence was mistaken for audio")
+        #expect(recorder.recordedSeconds > 1.5, "the buffers were not accumulated at all")
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.5, amplitude: 0.5)
+
+        #expect(recorder.hasHeardAudio, "real audio was mistaken for silence")
+        #expect(recorder.recordedSeconds > 0.4, "the audio that woke the device was dropped too")
+        #expect(recorder.recordedSeconds < 0.7, "the warm-up silence was kept, so the timer starts late")
+    }
+
+    /// The negative control. A device that is awake from the first buffer must
+    /// lose nothing, or every recording on a wired microphone would be trimmed.
+    @Test("A device awake from the first buffer loses nothing")
+    func awakeDeviceKeepsEverything() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.5, amplitude: 0.5)
+        #expect(recorder.hasHeardAudio)
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.5, amplitude: 0.5)
+
+        #expect(recorder.recordedSeconds > 0.9, "audio was discarded after the device was awake")
     }
 
     @Test("Silence produces a level of zero and speech does not")

@@ -7,12 +7,12 @@ import Foundation
 /// There are two kinds of state here and they are synchronised differently,
 /// because they have different callers:
 ///
-/// - The engine and its lifecycle are confined to `engineQueue`. Every call into
-///   AVAudioEngine goes through it, which serialises our own access and keeps
-///   CoreAudio off the main thread.
-/// - The sample buffer and level history are guarded by `lock`, because the tap
-///   callback runs on a realtime audio thread that must not block on a queue,
-///   and the UI reads them at 20 Hz from the main actor.
+/// - The capture session and its lifecycle are confined to `engineQueue`. Every
+///   call that opens or closes a device goes through it, which serialises our
+///   own access and keeps CoreAudio off the main thread.
+/// - The sample buffer and level history are guarded by `lock`, because samples
+///   are delivered on the capture session's own queue while the UI reads them
+///   at 20 Hz from the main actor.
 public final class AudioRecorder: @unchecked Sendable {
 
     public enum RecorderError: LocalizedError {
@@ -54,19 +54,17 @@ public final class AudioRecorder: @unchecked Sendable {
     /// the application passes one.
     public let engineTimeout: TimeInterval
 
-    /// Serialises every call into AVAudioEngine, and keeps them off the main
-    /// thread.
+    /// Serialises opening and closing the input device, and keeps it off the
+    /// main thread.
     ///
-    /// `AVAudioEngine.inputNode` enumerates the audio hardware synchronously. On
-    /// a machine with several devices attached that walk is slow, and if the
-    /// hardware topology changes while it is in progress it can stop making
-    /// progress at all: AVFAudio's own queue blocks on the engine's recursive
-    /// mutex, which is held by whoever is inside `inputNode`.
+    /// Asking CoreAudio for hardware is synchronous and can be slow — on a
+    /// machine with several devices attached, or one whose topology is changing
+    /// underneath the call, it has been observed not to return at all.
     ///
-    /// That contention belongs to CoreAudio and cannot be fixed from here. What
-    /// can be fixed is which thread gets caught in it. On the main thread the
-    /// whole application stops answering — no menu, no hotkey, nothing, until it
-    /// is killed. On this queue a dictation fails and the user still has an app.
+    /// That belongs to CoreAudio and cannot be fixed from here. What can be
+    /// fixed is which thread gets caught in it. On the main thread the whole
+    /// application stops answering — no menu, no hotkey, nothing, until it is
+    /// killed. On this queue a dictation fails and the user still has an app.
     ///
     /// Moving off the main thread was not by itself enough. A serial queue whose
     /// front block never returns is a queue nothing else will ever run on, so
@@ -75,7 +73,8 @@ public final class AudioRecorder: @unchecked Sendable {
     /// guard that stops two recordings starting at once, and the shortcut went
     /// quiet for the rest of the process's life. Hence `engineGeneration` and
     /// the replacement in `abandonQueue(generation:operation:)` — a wedged queue
-    /// is written off rather than waited on.
+    /// is written off rather than waited on. `AVCaptureSession.startRunning()`
+    /// is the blocking call this now guards.
     private var engineQueue = AudioRecorder.makeEngineQueue()
 
     private static func makeEngineQueue() -> DispatchQueue {
@@ -83,7 +82,7 @@ public final class AudioRecorder: @unchecked Sendable {
     }
 
     /// Incremented whenever a queue is abandoned, which makes every reference to
-    /// the engine that the abandoned queue still holds detectably stale.
+    /// the session that the abandoned queue still holds detectably stale.
     ///
     /// A hung CoreAudio call is not guaranteed to hang forever. If it returns
     /// after its queue has been written off, the block it belongs to resumes and
@@ -133,6 +132,7 @@ public final class AudioRecorder: @unchecked Sendable {
     /// must not be disturbed by the system clock being adjusted underneath it.
     private var lastAudioUptime: UInt64?
     private var reportedFirstBuffer = false
+    private var heardAudio = false
     private var reportedDrop = false
     private var samples: [Float] = []
     private var level: Float = 0
@@ -144,6 +144,20 @@ public final class AudioRecorder: @unchecked Sendable {
     /// is actually producing.
     private var cachedConverter: AVAudioConverter?
     private var cachedConverterFormat: AVAudioFormat?
+
+    /// Whether the device has delivered anything other than silence yet.
+    ///
+    /// A Bluetooth headset leaving its music profile delivers buffers before it
+    /// delivers sound: correctly sized, correctly timed, and bit-exact zero. A
+    /// recording started in that window looks live and hears nothing, so the
+    /// user talks into it and loses the opening seconds. This is what separates
+    /// the two, and it is exact — a working microphone in a silent room still
+    /// produces non-zero samples, while a warming one produces none at all.
+    public var hasHeardAudio: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return heardAudio
+    }
 
     /// How long since the tap last delivered audio, measured from the start of
     /// the recording until the first buffer arrives.
@@ -422,6 +436,7 @@ public final class AudioRecorder: @unchecked Sendable {
         lastAudioUptime = DispatchTime.now().uptimeNanoseconds
         reportedFirstBuffer = false
         reportedDrop = false
+        heardAudio = false
         lock.unlock()
 
         isRunning = true
@@ -576,94 +591,9 @@ public final class AudioRecorder: @unchecked Sendable {
         }
     }
 
-    /// Describes the device the input unit is actually bound to, which is not
-    /// necessarily the one the user believes is selected.
-    private static func describeDevice(of node: AVAudioInputNode) -> String {
-        guard let unit = node.audioUnit else { return "unknown (no audio unit)" }
-
-        var device = AudioDeviceID(0)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
-                                          kAudioUnitScope_Global, 0, &device, &size)
-        guard status == noErr else { return "unknown (status \(status))" }
-
-        var nameAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var name: CFString = "" as CFString
-        var nameSize = UInt32(MemoryLayout<CFString>.size)
-        let named = AudioObjectGetPropertyData(device, &nameAddress, 0, nil, &nameSize, &name)
-
-        var transportAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyTransportType,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var transport: UInt32 = 0
-        var transportSize = UInt32(MemoryLayout<UInt32>.size)
-        AudioObjectGetPropertyData(device, &transportAddress, 0, nil, &transportSize, &transport)
-
-        let kind: String
-        switch transport {
-        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: kind = "bluetooth"
-        case kAudioDeviceTransportTypeUSB: kind = "usb"
-        case kAudioDeviceTransportTypeBuiltIn: kind = "built-in"
-        case kAudioDeviceTransportTypeAggregate: kind = "aggregate"
-        case kAudioDeviceTransportTypeVirtual: kind = "virtual"
-        default: kind = "transport \(transport)"
-        }
-
-        return "id=\(device) \(named == noErr ? (name as String) : "unnamed") [\(kind)]"
-    }
-
     private static func describe(_ format: AVAudioFormat) -> String {
         "\(Int(format.sampleRate))Hz/\(format.channelCount)ch "
             + "interleaved=\(format.isInterleaved) common=\(format.commonFormat.rawValue)"
-    }
-
-    /// Tears the engine down without ending the recording, so the hardware gets
-    /// a moment to itself before capture is built again.
-    ///
-    /// Separate from `stop()` because the recording is still in progress and the
-    /// audio already captured must survive. Paired with `resumeCapture()`.
-    public func suspendCapture() async {
-        _ = try? await withEngineQueue("suspend capture") { _ in
-            self.suspendCaptureOnQueue()
-        }
-    }
-
-    private func suspendCaptureOnQueue() {
-        guard isRunning else { return }
-
-        tearDownSessionOnQueue()
-        onDiagnostic?("capture: suspended")
-    }
-
-    /// Builds capture again for a recording that is still running, leaving the
-    /// audio already recorded in place.
-    ///
-    /// The gap between this and `suspendCapture()` is the caller's to choose,
-    /// and it matters: stopping a USB or Bluetooth input leaves the kernel
-    /// finishing its cleanup asynchronously, and a capture started inside that
-    /// window is killed by the cleanup of the one before it.
-    public func resumeCapture() async throws {
-        try await withEngineQueue("resume capture") { generation in
-            try self.resumeCaptureOnQueue(generation: generation)
-        }
-    }
-
-    private func resumeCaptureOnQueue(generation: Int) throws {
-        guard isRunning else { return }
-
-        try beginCaptureOnQueue(generation: generation)
-
-        lock.lock()
-        lastAudioUptime = DispatchTime.now().uptimeNanoseconds
-        reportedFirstBuffer = false
-        reportedDrop = false
-        lock.unlock()
     }
 
     /// Stops capture and returns everything recorded, clearing the buffer.
@@ -847,7 +777,25 @@ public final class AudioRecorder: @unchecked Sendable {
         }
         let rms = (sumOfSquares / Float(frameCount)).squareRoot()
 
+        // Bit-exact zero is what a headset produces while it is still leaving
+        // its music profile. Anything else, however quiet, means the microphone
+        // is genuinely live.
+        let audible = converted.contains { $0 != 0 }
+
         lock.lock()
+        let firstAudible = audible && !heardAudio
+        let silentSeconds = Double(samples.count) / Self.targetSampleRate
+
+        if firstAudible {
+            // Everything captured up to here is the device warming up: buffers
+            // of bit-exact silence, worth nothing to the transcriber and
+            // actively misleading in the timer, which would start counting from
+            // however long the headset took to wake. Dropping it starts the
+            // recording where the audio does.
+            samples.removeAll()
+            levels.removeAll()
+        }
+        if audible { heardAudio = true }
         lastAudioUptime = DispatchTime.now().uptimeNanoseconds
         samples.append(contentsOf: converted)
         level = rms
@@ -856,5 +804,10 @@ public final class AudioRecorder: @unchecked Sendable {
             levels.removeFirst(levels.count - Self.levelHistoryLength)
         }
         lock.unlock()
+
+        if firstAudible {
+            onDiagnostic?(String(format: "capture: first audible sample after %.3f s of silence, "
+                                 + "which was discarded", silentSeconds))
+        }
     }
 }

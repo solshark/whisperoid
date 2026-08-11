@@ -32,6 +32,7 @@ struct OverlayView: View {
 
     private var mode: WavesVisual.Mode {
         switch model.phase {
+        case .warmingUp: .working
         case .recording: .listening
         case .transcribing, .cleaning: .working
         case .done, .failed: .settled(since: model.phaseChangedAt)
@@ -41,6 +42,12 @@ struct OverlayView: View {
     @ViewBuilder
     private var caption: some View {
         switch model.phase {
+        case .warmingUp:
+            Text("GETTING READY")
+                .font(.system(size: 15, weight: .light, design: .monospaced))
+                .tracking(4)
+                .foregroundStyle(.white.opacity(0.88))
+
         case .recording:
             Text(Self.timestamp(model.elapsed))
                 .font(.system(size: 23, weight: .light, design: .monospaced))
