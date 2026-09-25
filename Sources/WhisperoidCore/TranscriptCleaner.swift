@@ -304,7 +304,8 @@ public enum ModelOutput {
 /// This asks a different question — where did each output word come from? A
 /// word is legitimate if it was in the transcript, is a fragment of a word in
 /// the transcript (so splitting `muchmemory` is allowed), or is a glossary term
-/// (so `Kolyma` → `Colima` is allowed). Anything else was invented.
+/// (so `Kolyma` → `Colima` is allowed). Anything else was invented. It also
+/// refuses output that has lost punctuation the transcript had.
 public enum VocabularyGuard {
 
     public struct Verdict: Sendable {
@@ -336,7 +337,31 @@ public enum VocabularyGuard {
             return Verdict(accepted: false, text: original, reasons: ["dropped “\(term)”"])
         }
 
+        // Punctuation is policed by count rather than position, so a comma may
+        // become a full stop, but none may disappear. Observed with the embedded
+        // model: a correctly punctuated transcript came back with three commas
+        // and a question mark removed, which the word checks above cannot see.
+        // A question mark is counted separately because turning one into a full
+        // stop changes what the speaker meant.
+        let before = punctuation(in: original), after = punctuation(in: candidate)
+        if after.total < before.total {
+            return Verdict(accepted: false, text: original,
+                           reasons: ["dropped punctuation (\(before.total) → \(after.total))"])
+        }
+        if after.questions < before.questions {
+            return Verdict(accepted: false, text: original, reasons: ["dropped a question mark"])
+        }
+
         return Verdict(accepted: true, text: candidate, reasons: [])
+    }
+
+    /// Sentence punctuation only. Apostrophes and hyphens belong to words, and
+    /// the word checks already account for those.
+    static func punctuation(in text: String) -> (total: Int, questions: Int) {
+        let marks: Set<Character> = [".", ",", "?", "!", ";", ":", "…"]
+        let total = text.filter { marks.contains($0) }.count
+        let questions = text.filter { $0 == "?" }.count
+        return (total, questions)
     }
 
     static func words(in text: String) -> [String] {

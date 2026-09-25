@@ -117,6 +117,45 @@ struct VocabularyGuardTests {
 
     private let glossary = ["Colima", "Claude Code", "Postgres", "Docker"]
 
+    @Test("Output that lost punctuation is refused")
+    func rejectsDroppedPunctuation() {
+        // Real dictation, 2026-09-25: the embedded model removed three correct
+        // commas from an already punctuated transcript.
+        let verdict = VocabularyGuard.check(
+            original: "if it will record, recover any formatting, capitalization, question marks maybe. Let's see.",
+            candidate: "if it will record recover any formatting capitalization question marks maybe. Let's see.",
+            glossary: glossary
+        )
+        #expect(!verdict.accepted)
+    }
+
+    @Test("A question mark may not become a full stop")
+    func rejectsLostQuestion() {
+        let verdict = VocabularyGuard.check(
+            original: "What about these Gemma models?",
+            candidate: "What about these Gemma models.",
+            glossary: glossary
+        )
+        #expect(!verdict.accepted)
+    }
+
+    @Test("Punctuation may be added or changed, just not removed")
+    func acceptsPunctuationChanges() {
+        let added = VocabularyGuard.check(
+            original: "so what do you think should we ship this today",
+            candidate: "So, what do you think? Should we ship this today?",
+            glossary: glossary
+        )
+        #expect(added.accepted)
+
+        let changed = VocabularyGuard.check(
+            original: "we ship today, then rest",
+            candidate: "We ship today. Then rest",
+            glossary: glossary
+        )
+        #expect(changed.accepted)
+    }
+
     @Test("A glossary term may replace a mishearing of it")
     func acceptsGlossarySubstitution() {
         let verdict = VocabularyGuard.check(
