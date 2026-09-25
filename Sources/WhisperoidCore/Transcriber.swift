@@ -46,6 +46,9 @@ public final class Transcriber: @unchecked Sendable {
         public let text: String
         public let language: String
         public let duration: TimeInterval
+        /// Size of the glossary prompt the model was given, zero when none was.
+        /// Logged so a transcript can be attributed to the setting that made it.
+        public var promptTokens: Int = 0
     }
 
     public enum TranscriberError: LocalizedError {
@@ -190,15 +193,35 @@ public final class Transcriber: @unchecked Sendable {
         onPhase(.ready)
     }
 
-    public func transcribe(samples: [Float]) async throws -> Output {
+    /// The sentence given to the model as its prompt, built from the glossary.
+    ///
+    /// Whisper treats a prompt as text that preceded the recording, so the
+    /// terms are written as a punctuated sentence: the model copies both the
+    /// spelling of the terms and the style of the prose. Measured on
+    /// 2026-09-25 with WhisperKit 1.1.0, this corrected `Cloud Code`, `Kolyma`
+    /// and the Cyrillic `Колема` in the recording itself, with no prompt text
+    /// appearing in the output for silence, noise or very short clips.
+    public static func prompt(for glossary: [String]) -> String? {
+        let terms = glossary
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard let last = terms.last else { return nil }
+        guard terms.count > 1 else { return "We use \(last)." }
+        return "We use \(terms.dropLast().joined(separator: ", ")) and \(last)."
+    }
+
+    /// Whisper's prompt occupies at most half of its 448-token text context.
+    /// Anything past this would be discarded by the model, or crowd out the
+    /// transcript itself.
+    static let maximumPromptTokens = 200
+
+    public func transcribe(samples: [Float], glossary: [String] = []) async throws -> Output {
         guard let pipe = currentPipe() else { throw TranscriberError.notLoaded }
 
         let seconds = Double(samples.count) / AudioRecorder.targetSampleRate
         guard seconds >= Self.minimumSeconds else { throw TranscriberError.tooShort }
 
-        // Custom vocabulary via `promptTokens` is deliberately not used: it
-        // returns empty output on this model variant in WhisperKit 0.18.
-        let options = DecodingOptions(
+        var options = DecodingOptions(
             verbose: false,
             task: .transcribe,
             language: nil,
@@ -207,6 +230,14 @@ public final class Transcriber: @unchecked Sendable {
             skipSpecialTokens: true,
             withoutTimestamps: true
         )
+
+        // Requires WhisperKit 1.1 or later: on 0.18 any prompt produced empty
+        // output on this model variant.
+        if let prompt = Self.prompt(for: glossary), let tokenizer = pipe.tokenizer {
+            let tokens = tokenizer.encode(text: " " + prompt)
+                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+            options.promptTokens = Array(tokens.prefix(Self.maximumPromptTokens))
+        }
 
         let started = Date()
         let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
@@ -220,7 +251,8 @@ public final class Transcriber: @unchecked Sendable {
         return Output(
             text: text,
             language: results.first?.language ?? "??",
-            duration: elapsed
+            duration: elapsed,
+            promptTokens: options.promptTokens?.count ?? 0
         )
     }
 }
