@@ -1,8 +1,9 @@
 import Foundation
 import WhisperoidCore
 
-/// Development tool: runs the embedded cleanup model over the spike's ground
-/// truth and reports what it fixed, missed and damaged.
+/// Development tool: runs a cleanup model over the spike's ground truth and
+/// reports what it fixed, missed and damaged. Scores the embedded model by
+/// default, or the Apple Intelligence system model with `--apple`.
 ///
 /// Exists as an executable rather than a test because MLX resolves its Metal
 /// shader library relative to the running binary, and the test runner does not
@@ -12,7 +13,7 @@ import WhisperoidCore
 ///     xcodebuild build -scheme cleanupcheck -destination 'platform=macOS' \
 ///         -derivedDataPath .build/xcode -configuration Release \
 ///         -skipPackagePluginValidation
-///     .build/xcode/Build/Products/Release/cleanupcheck
+///     .build/xcode/Build/Products/Release/cleanupcheck [--apple]
 @main
 struct CleanupCheck {
 
@@ -50,27 +51,29 @@ struct CleanupCheck {
 
     static func main() async {
         do {
-            let directory = try Paths.ensureSupportDirectory()
-            let cleaner = EmbeddedCleaner(storageDirectory: directory)
+            let clean: (String) async throws -> CleanupResult
+            let finish: () async -> Void
 
-            let started = Date()
-            try await cleaner.load { phase in
-                if case .downloading = phase {
-                    // Reported per file, and there are only a handful, so this
-                    // is quiet enough to print unconditionally.
-                    print("  \(phase.description)")
-                } else {
-                    print("  \(phase.description)")
+            if CommandLine.arguments.contains("--apple") {
+                print("model: Apple Intelligence (\(SystemModelCleaner.availability.description))")
+                let cleaner = SystemModelCleaner()
+                clean = { try await cleaner.clean($0, glossary: ModelOutput.defaultGlossary) }
+                finish = {}
+            } else {
+                print("model: \(EmbeddedCleaner.modelIdentifier)")
+                let cleaner = try await loadEmbedded()
+                clean = { try await cleaner.clean($0, configuration: EmbeddedCleaner.Configuration()) }
+                finish = {
+                    await cleaner.unload()
+                    print("unloaded")
                 }
             }
-            print(String(format: "load: %.1f s", Date().timeIntervalSince(started)))
 
-            let configuration = EmbeddedCleaner.Configuration()
             var fixed = 0, defects = 0, damaged = 0
             var durations: [TimeInterval] = []
 
             for testCase in cases {
-                let result = try await cleaner.clean(testCase.input, configuration: configuration)
+                let result = try await clean(testCase.input)
                 let got = result.text
                 let corrected = testCase.mustFix.filter {
                     !got.contains($0.0) && got.contains($0.1)
@@ -99,11 +102,22 @@ struct CleanupCheck {
             print(String(format: "\n--> fixed %d/%d | damaged %d | avg %.2f s",
                          fixed, defects, damaged, average))
 
-            await cleaner.unload()
-            print("unloaded")
+            await finish()
         } catch {
             FileHandle.standardError.write(Data("failed: \(error)\n".utf8))
             exit(1)
         }
+    }
+
+    static func loadEmbedded() async throws -> EmbeddedCleaner {
+        let directory = try Paths.ensureSupportDirectory()
+        let cleaner = EmbeddedCleaner(storageDirectory: directory)
+
+        let started = Date()
+        try await cleaner.load { phase in
+            print("  \(phase.description)")
+        }
+        print(String(format: "load: %.1f s", Date().timeIntervalSince(started)))
+        return cleaner
     }
 }

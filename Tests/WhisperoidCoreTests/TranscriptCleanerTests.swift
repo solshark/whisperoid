@@ -209,8 +209,52 @@ struct ModelOutputTests {
 
     @Test("The glossary reaches the prompt")
     func includesGlossary() {
-        let prompt = EmbeddedCleaner.prompt(for: "test", glossary: ["Colima", "Postgres"])
+        let prompt = ModelOutput.prompt(for: "test", glossary: ["Colima", "Postgres"])
         #expect(prompt.contains("Colima, Postgres"))
         #expect(prompt.contains("<text>\ntest\n</text>"))
+    }
+
+    @Test("An accepted reply replaces the transcript")
+    func resultAcceptsCorrection() throws {
+        let result = try #require(ModelOutput.result(
+            reply: "<corrected>Move it to Colima.</corrected>",
+            original: "Move it to Kolyma.",
+            glossary: ["Colima"],
+            mode: .appleModel,
+            started: Date()
+        ))
+        #expect(result.text == "Move it to Colima.")
+        #expect(result.original == "Move it to Kolyma.")
+        #expect(result.mode == .appleModel)
+        #expect(result.rejected.isEmpty)
+    }
+
+    @Test("A translated reply is refused and the transcript kept")
+    func resultRefusesTranslation() throws {
+        // Observed from the Apple Intelligence model on macOS 27.0: asked to
+        // correct a Russian transcript, it answered in English.
+        let original = "Давай перенесем контейнер Postgres на Колема сегодня днем."
+        let result = try #require(ModelOutput.result(
+            reply: "<corrected>Let's move the container Postgres to Colima today.</corrected>",
+            original: original,
+            glossary: ["Colima", "Postgres"],
+            mode: .appleModel,
+            started: Date()
+        ))
+        #expect(result.text == original)
+        #expect(!result.changed)
+        #expect(!result.rejected.isEmpty)
+    }
+
+    @Test("An empty reply yields no result")
+    func resultRejectsEmptyReply() {
+        let result = ModelOutput.result(
+            reply: "<corrected></corrected>",
+            original: "Hello there.",
+            glossary: [],
+            mode: .model,
+            started: Date()
+        )
+        #expect(result == nil)
     }
 }

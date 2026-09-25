@@ -125,12 +125,21 @@ reaches the clipboard, chosen in Settings:
 | Off | Default. Nothing is downloaded and nothing runs. |
 | Spelling (macOS) | The system spell checker splits run-together words. No model, no download. |
 | Language model (experimental) | An on-device model repairs spacing, punctuation and misheard terms. |
+| Apple Intelligence (experimental) | The same repair, using the model built into macOS 26 and later. No download. |
 
 **Model mode downloads a second model** of about 3.3 GB,
 `mlx-community/gemma-4-e2b-it-4bit`, the first time it is selected. It runs
 in-process through MLX, is loaded at launch and released again after an
 idle period, and like everything else here it never contacts a network once
 downloaded. A user who never opens Settings is unaffected by any of this.
+
+**Apple Intelligence mode downloads nothing** and holds no memory in
+Whisperoid, because the model belongs to macOS. It requires macOS 26 or later
+with Apple Intelligence enabled. It corrects fewer terms than the downloaded
+model: measured on macOS 27.0, it fixed two of four test defects against three,
+and it answers a Russian transcript in English, which the guard below refuses,
+so Russian dictation passes through unchanged. Its behaviour depends on the
+macOS version, since Apple updates the model with the operating system.
 
 **The glossary is what makes it work, not the model.** Across eight models
 tested, a run with no glossary corrected roughly one defect in six; with one,

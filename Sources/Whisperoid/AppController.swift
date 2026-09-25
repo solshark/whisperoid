@@ -522,6 +522,21 @@ final class AppController {
                 Log.error("Cleanup unavailable: \(error.localizedDescription)")
                 return .untouched(output.text, mode: .model)
             }
+
+        case .appleModel:
+            // Nothing to load or unload: the system model lives outside this
+            // process and macOS manages its memory.
+            do {
+                let result = try await SystemModelCleaner().clean(
+                    output.text,
+                    glossary: preferences.glossaryTerms
+                )
+                report(result)
+                return result
+            } catch {
+                Log.error("Cleanup unavailable: \(error.localizedDescription)")
+                return .untouched(output.text, mode: .appleModel)
+            }
         }
     }
 

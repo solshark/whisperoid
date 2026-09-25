@@ -6,13 +6,15 @@ import AppKit
 
 /// How a transcript is post-processed before it is injected.
 ///
-/// Both modes are off by default, and the model mode downloads several
-/// gigabytes the first time it is chosen, so a user who never opens Settings is
-/// unaffected by any of it.
+/// Cleanup is off by default, and the model mode downloads several gigabytes
+/// the first time it is chosen, so a user who never opens Settings is
+/// unaffected by any of it. The Apple Intelligence mode downloads nothing: it
+/// uses the language model built into macOS 26 and later.
 public enum CleanupMode: String, CaseIterable, Sendable, Identifiable {
     case off
     case spelling
     case model
+    case appleModel
 
     public var id: String { rawValue }
 
@@ -21,6 +23,7 @@ public enum CleanupMode: String, CaseIterable, Sendable, Identifiable {
         case .off: "Off"
         case .spelling: "Spelling (macOS)"
         case .model: "Language model (experimental)"
+        case .appleModel: "Apple Intelligence (experimental)"
         }
     }
 }
@@ -187,6 +190,69 @@ public enum ModelOutput {
         "Gemma", "Docker", "GitLab", "Core ML", "Swift", "Xcode",
         "MinIO", "Celery", "Redis", "Kubernetes", "Homebrew",
     ]
+
+    /// Wording measured against the same six cases as every other candidate,
+    /// and shared by every model backend so their results stay comparable.
+    /// The transliteration sentence is what lets a single glossary entry cover
+    /// mishearings across alphabets, so `Colima` also catches `Колема`.
+    public static func prompt(for text: String, glossary: [String]) -> String {
+        """
+        Correct the speech-to-text transcript inside the <text> tags.
+
+        Rules:
+        - Fix missing spaces, missing or wrong punctuation, and wrong capitalisation.
+        - Fix words that were clearly misheard by the speech-to-text system.
+        - Do NOT rephrase. Do NOT expand abbreviations or product names.
+        - Do NOT add, remove or reorder any content.
+        - Output plain text only. Never use markdown: no asterisks, no bold, no
+          italics, no backticks, no headings, no lists.
+        - Reply in the same language as the input.
+        - If nothing is wrong, repeat the text unchanged.
+
+        The speaker often uses these terms and the speech-to-text system mishears \
+        them, sometimes phonetically and sometimes transliterated into another \
+        alphabet. Restore the exact spelling listed below whenever the context \
+        matches, in its original alphabet, regardless of the surrounding language. \
+        Product names are often heard as ordinary words that sound similar:
+        \(glossary.joined(separator: ", "))
+
+        <text>
+        \(text)
+        </text>
+
+        Put the corrected transcript inside <corrected> tags. Output nothing else.
+        """
+    }
+
+    /// Turns a model's raw reply into a cleanup result.
+    ///
+    /// Extracts, normalises and guards the reply, falling back to the original
+    /// transcript when the guard refuses it. Returns `nil` for an empty reply,
+    /// which each backend reports as its own error.
+    public static func result(
+        reply: String,
+        original: String,
+        glossary: [String],
+        mode: CleanupMode,
+        started: Date
+    ) -> CleanupResult? {
+        let candidate = extract(reply)
+        guard !candidate.isEmpty else { return nil }
+
+        let guarded = VocabularyGuard.check(
+            original: original,
+            candidate: normalise(candidate),
+            glossary: glossary
+        )
+
+        return CleanupResult(
+            text: guarded.accepted ? guarded.text : original,
+            original: original,
+            mode: mode,
+            duration: Date().timeIntervalSince(started),
+            rejected: guarded.reasons
+        )
+    }
 
     /// Pulls the reply out of the `<corrected>` tags the prompt asks for.
     /// Smaller models routinely open the tag and never close it.

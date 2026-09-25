@@ -144,57 +144,17 @@ public actor EmbeddedCleaner {
         )
 
         let reply = try await session.respond(
-            to: Self.prompt(for: text, glossary: configuration.glossary)
+            to: ModelOutput.prompt(for: text, glossary: configuration.glossary)
         )
 
-        let candidate = ModelOutput.extract(reply)
-        guard !candidate.isEmpty else { throw CleanerError.emptyReply }
-
-        let guarded = VocabularyGuard.check(
+        guard let result = ModelOutput.result(
+            reply: reply,
             original: text,
-            candidate: ModelOutput.normalise(candidate),
-            glossary: configuration.glossary
-        )
-
-        return CleanupResult(
-            text: guarded.accepted ? guarded.text : text,
-            original: text,
+            glossary: configuration.glossary,
             mode: .model,
-            duration: Date().timeIntervalSince(started),
-            rejected: guarded.reasons
-        )
-    }
-
-    /// Wording measured against the same six cases as every other candidate.
-    /// The transliteration sentence is what lets a single glossary entry cover
-    /// mishearings across alphabets, so `Colima` also catches `Колема`.
-    static func prompt(for text: String, glossary: [String]) -> String {
-        """
-        Correct the speech-to-text transcript inside the <text> tags.
-
-        Rules:
-        - Fix missing spaces, missing or wrong punctuation, and wrong capitalisation.
-        - Fix words that were clearly misheard by the speech-to-text system.
-        - Do NOT rephrase. Do NOT expand abbreviations or product names.
-        - Do NOT add, remove or reorder any content.
-        - Output plain text only. Never use markdown: no asterisks, no bold, no
-          italics, no backticks, no headings, no lists.
-        - Reply in the same language as the input.
-        - If nothing is wrong, repeat the text unchanged.
-
-        The speaker often uses these terms and the speech-to-text system mishears \
-        them, sometimes phonetically and sometimes transliterated into another \
-        alphabet. Restore the exact spelling listed below whenever the context \
-        matches, in its original alphabet, regardless of the surrounding language. \
-        Product names are often heard as ordinary words that sound similar:
-        \(glossary.joined(separator: ", "))
-
-        <text>
-        \(text)
-        </text>
-
-        Put the corrected transcript inside <corrected> tags. Output nothing else.
-        """
+            started: started
+        ) else { throw CleanerError.emptyReply }
+        return result
     }
 }
 
