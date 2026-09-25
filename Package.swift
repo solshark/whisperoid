@@ -8,19 +8,25 @@ let package = Package(
         .executable(name: "Whisperoid", targets: ["Whisperoid"])
     ],
     dependencies: [
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.18.0"),
+        .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "1.1.0"),
         // On-device text cleanup. MLX rather than a local server: the server
         // approach worked but required the user to install and run Ollama
         // separately, which is not something an app can rely on.
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "3.31.4"),
+        // The cleanup model's download and tokenizer bridge onto this. It used
+        // to arrive through WhisperKit, which now vendors its own copy
+        // internally, so it has to be declared directly.
+        .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.1.9"),
     ],
     targets: [
         .target(
             name: "WhisperoidCore",
             dependencies: [
-                .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "Hub", package: "swift-transformers"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
             ]
         ),
         .executableTarget(
