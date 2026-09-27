@@ -149,6 +149,11 @@ struct SettingsView: View {
                 }
                 .disabled(preferences.cleanupMode != .model)
 
+                Toggle("Give these terms to the speech model",
+                       isOn: $preferences.promptWithGlossary)
+
+                caption("Corrects the terms below while transcribing rather than afterwards, so it works with cleanup off and needs no second model. It adds about a quarter of a second to each dictation.")
+
                 Group {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Terms to recognise, one per line")
@@ -164,7 +169,9 @@ struct SettingsView: View {
 
                     caption("This list is what makes the model modes work: without it the models tested corrected roughly one defect in six, and with it four to six. Listing a term once is enough — the model matches mishearings and transliterations of it, so Colima also catches Kolyma and Колема. Do not list two spellings of the same thing.")
                 }
-                .disabled(preferences.cleanupMode != .model && preferences.cleanupMode != .appleModel)
+                .disabled(!preferences.promptWithGlossary
+                          && preferences.cleanupMode != .model
+                          && preferences.cleanupMode != .appleModel)
                 // Starts the first download while Settings is open, rather than
                 // in the middle of the next dictation.
                 .onChange(of: preferences.cleanupMode) { controller.prepareCleanupModel() }

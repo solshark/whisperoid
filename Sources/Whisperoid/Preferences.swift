@@ -16,6 +16,7 @@ final class Preferences {
         static let cleanupGlossary = "cleanupGlossary"
         static let logCleanupComparison = "logCleanupComparison"
         static let cleanupIdleUnloadMinutes = "cleanupIdleUnloadMinutes"
+        static let promptWithGlossary = "promptWithGlossary"
     }
 
     static let silenceRange: ClosedRange<Double> = 1.5...10.0
@@ -76,6 +77,16 @@ final class Preferences {
         didSet { defaults.set(cleanupGlossary, forKey: Key.cleanupGlossary) }
     }
 
+    /// Gives the speech model the glossary before it transcribes.
+    ///
+    /// Corrects terms in the transcript itself rather than afterwards, so it
+    /// needs no second model and works with cleanup off. Off by default while
+    /// it is judged in real use, like every other option that can change
+    /// what the speaker is recorded as saying.
+    var promptWithGlossary: Bool {
+        didSet { defaults.set(promptWithGlossary, forKey: Key.promptWithGlossary) }
+    }
+
     /// Writes the text before and after cleanup to the unified log.
     ///
     /// Off by default and deliberately not sticky-by-accident: entries are
@@ -116,6 +127,7 @@ final class Preferences {
             Key.cleanupMode: CleanupMode.off.rawValue,
             Key.logCleanupComparison: false,
             Key.cleanupIdleUnloadMinutes: 2,
+            Key.promptWithGlossary: false,
             Key.cleanupGlossary: ModelOutput.defaultGlossary
                 .joined(separator: "\n"),
             // Measured gaps within continuous speech reach 1.9 s, so 3 s leaves
@@ -132,5 +144,6 @@ final class Preferences {
         cleanupGlossary = defaults.string(forKey: Key.cleanupGlossary) ?? ""
         logCleanupComparison = defaults.bool(forKey: Key.logCleanupComparison)
         cleanupIdleUnloadMinutes = defaults.integer(forKey: Key.cleanupIdleUnloadMinutes)
+        promptWithGlossary = defaults.bool(forKey: Key.promptWithGlossary)
     }
 }

@@ -450,14 +450,18 @@ final class AppController {
             }
 
             do {
-                let output = try await transcriber.transcribe(samples: samples)
+                let output = try await transcriber.transcribe(
+                    samples: samples,
+                    glossary: preferences.promptWithGlossary ? preferences.glossaryTerms : []
+                )
                 guard !output.text.isEmpty else {
                     fail("Nothing was transcribed.")
                     return
                 }
 
-                Log.info(String(format: "transcribed %d characters, language %@, in %.2f s",
-                                output.text.count, output.language, output.duration))
+                Log.info(String(format: "transcribed %d characters, language %@, in %.2f s, glossary prompt %d tokens",
+                                output.text.count, output.language, output.duration,
+                                output.promptTokens))
 
                 let cleaned = await cleanup(output)
 
