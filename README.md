@@ -148,6 +148,16 @@ where names specific to your own work belong — colleagues, employers, internal
 services. One entry covers both alphabets: listing `Colima` also repairs its
 Cyrillic mishearings.
 
+**The glossary can also go to the speech model itself.** With "Give these
+terms to the speech model" enabled in Settings, the glossary is passed to
+Whisper as a prompt, written as a sentence ("We use Colima, Postgres and
+Claude Code."). The terms are then spelled correctly in the transcript, with
+cleanup off and no second model, for about a quarter of a second per
+dictation. A short glossary works better than a long one: measured on the
+test recordings, eight terms corrected a Cyrillic mishearing of `Colima` that
+twenty-two terms did not. This requires the Argmax open-source SDK 1.1 or
+later; on WhisperKit 0.18 any prompt produced empty output on this model.
+
 Cleanup is not permitted to cost you a dictation. The output is rejected
 wholesale if the model invented a word that was not in the transcript or the
 glossary, or dropped a glossary term it was given, and the original transcript
@@ -207,17 +217,6 @@ B=.build/arm64-apple-macosx/release/<Name>.bundle
 mv "$B" "$B.hidden"
 open build/Whisperoid.app --env WHISPEROID_SHOW_SETTINGS=1
 ```
-
-## Known upstream issue
-
-`DecodingOptions.promptTokens` returns empty output on this model variant in
-WhisperKit 0.18. Reproduced with WhisperKit's own `whisperkit-cli --prompt`, so
-it is not an integration fault. It works on `openai_whisper-base` and is
-unreliable on full large-v3.
-
-Custom vocabulary via decoder prompting is therefore not used. This matters:
-prompting measurably improved accuracy where it worked, correcting both jargon
-and adjacent ordinary words.
 
 ## Layout
 
