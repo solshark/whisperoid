@@ -1,4 +1,5 @@
 import Testing
+import WhisperKit
 
 @testable import WhisperoidCore
 
@@ -21,5 +22,12 @@ struct TranscriberPromptTests {
         // its terms, so the prompt is written as a punctuated sentence.
         #expect(Transcriber.prompt(for: ["Claude Code", " Colima ", "", "Postgres"])
             == "We use Claude Code, Colima and Postgres.")
+    }
+
+    @Test("Long recordings are split at pauses")
+    func chunksAtPauses() {
+        // Fixed 30-second windows lose speech at their boundaries, and with a
+        // glossary prompt can lose whole windows. See decodingOptions().
+        #expect(Transcriber.decodingOptions().chunkingStrategy == .vad)
     }
 }

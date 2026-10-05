@@ -215,21 +215,42 @@ public final class Transcriber: @unchecked Sendable {
     /// transcript itself.
     static let maximumPromptTokens = 200
 
-    public func transcribe(samples: [Float], glossary: [String] = []) async throws -> Output {
-        guard let pipe = currentPipe() else { throw TranscriberError.notLoaded }
-
-        let seconds = Double(samples.count) / AudioRecorder.targetSampleRate
-        guard seconds >= Self.minimumSeconds else { throw TranscriberError.tooShort }
-
-        var options = DecodingOptions(
+    /// Options for every transcription, before any glossary prompt is added.
+    ///
+    /// Recordings longer than the model's 30-second window are split at pauses
+    /// (`.vad`) and each piece is transcribed on its own. Without this they are
+    /// decoded as consecutive fixed windows, which loses speech in two ways,
+    /// both measured on 2026-10-05 against recordings with known text:
+    ///
+    /// - Text near the end of a window is dropped when the model stops before
+    ///   the window does, because the next window starts at the fixed boundary
+    ///   regardless. Word recall on a 33-second recording rose from 0.77 to 0.96.
+    /// - With a glossary prompt, a later window can come back empty and the
+    ///   language can be misdetected. A 60-second recording lost up to half its
+    ///   words, inconsistently between runs.
+    ///
+    /// Recordings within one window are not chunked, so this changes nothing
+    /// for short dictation.
+    static func decodingOptions() -> DecodingOptions {
+        DecodingOptions(
             verbose: false,
             task: .transcribe,
             language: nil,
             temperature: 0.0,
             detectLanguage: true,
             skipSpecialTokens: true,
-            withoutTimestamps: true
+            withoutTimestamps: true,
+            chunkingStrategy: .vad
         )
+    }
+
+    public func transcribe(samples: [Float], glossary: [String] = []) async throws -> Output {
+        guard let pipe = currentPipe() else { throw TranscriberError.notLoaded }
+
+        let seconds = Double(samples.count) / AudioRecorder.targetSampleRate
+        guard seconds >= Self.minimumSeconds else { throw TranscriberError.tooShort }
+
+        var options = Self.decodingOptions()
 
         // Requires WhisperKit 1.1 or later: on 0.18 any prompt produced empty
         // output on this model variant.
