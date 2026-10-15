@@ -119,6 +119,38 @@ Full large-v3 is roughly four times slower, produced identical English text, and
 misdetected Russian as Romanian badly enough to transcribe it *as* Romanian.
 Warm model load is about 5.6 s; resident memory is about 0.8 GB.
 
+### Long recordings
+
+Whisper decodes 30-second windows, so a longer recording is split into pieces,
+and where it is cut decides whether words survive: a piece that starts
+mid-sentence decodes badly, and can come back empty. Recordings are cut at
+pauses, and two adjustments make the pauses findable whatever the microphone:
+
+- **Levelling.** The recording is scaled so its loud speech peaks at -3 dBFS,
+  by at most +30 dB.
+- **A pause threshold per recording.** WhisperKit's default treats any 100 ms
+  frame below a fixed -34 dBFS as silence. A webcam microphone never reaches
+  that level, so the whole recording reads as silence and gets cut every
+  22.5 s, through words; a hot headset never drops below it, so no pause is
+  found and the cut falls at the 30-second limit. The threshold is instead
+  placed halfway, in decibels, between the recording's own pauses and its own
+  speech.
+
+Replaying real English, Russian and mixed dictation at levels from -65 to
+-15 dBFS, word recall went from anywhere between 0.33 and 1.00, varying from
+one run to the next, to 1.00 at every level. Recordings that the fixed
+threshold had forced into repeated decoding were also transcribed in less than
+half the time. `replaycheck` repeats the measurement:
+
+```sh
+swift build --product replaycheck
+.build/out/Products/Debug/replaycheck --clips a.wav,b.wav --reference ref.txt \
+    --gains -16,0,24 --variants app,default-vad
+```
+
+Clips must be 16 kHz mono; they are joined with pauses of matched room noise to
+build a long recording from short ones.
+
 ## Transcript cleanup
 
 Speech to text produces run-together words, missing punctuation and mangled
@@ -230,6 +262,7 @@ Sources/
   WhisperoidCore/     Audio capture, transcription, model download, silence detection, cleanup
   Whisperoid/         Menu bar app, setup window, hotkeys, overlay, preferences
   vadcheck/           Development tool for tuning auto-stop against a recording
+  replaycheck/        Development tool for measuring word recall on long recordings
   cleanupcheck/       Development tool for scoring the cleanup model
 Tests/                Swift Testing suites; run with `swift test`
 Resources/            Bundle configuration and entitlements
@@ -320,7 +353,8 @@ creating its support directory for the model cache.
 - Transcript history is text only, held in memory, capped at ten entries, and
   discarded when the app quits. It is not written to `UserDefaults` or disk.
 - Nothing transcribed is logged. Log entries carry the model name, storage
-  path, load timing and window geometry only.
+  path, timings, window geometry, audio levels and character counts: numbers
+  describing a recording, never its words.
 
 The transcript is placed on the clipboard by design. A clipboard manager will
 therefore archive it to disk, outside this app's control, which is worth

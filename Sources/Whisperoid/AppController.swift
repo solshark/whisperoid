@@ -675,9 +675,11 @@ final class AppController {
                     return
                 }
 
-                Log.info(String(format: "transcribed %d characters, language %@, in %.2f s, glossary prompt %d tokens",
+                Log.info(String(format: "transcribed %d characters, language %@, in %.2f s, glossary prompt %d tokens, "
+                                + "%d chunks, gain %+.1f dB, pause threshold %.1f dBFS",
                                 output.text.count, output.language, output.duration,
-                                output.promptTokens))
+                                output.promptTokens, output.chunks, output.inputGainDecibels,
+                                output.pauseThresholdDecibels))
 
                 let cleaned = await cleanup(output)
 

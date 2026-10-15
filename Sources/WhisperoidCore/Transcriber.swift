@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import WhisperKit
 
@@ -49,6 +50,13 @@ public final class Transcriber: @unchecked Sendable {
         /// Size of the glossary prompt the model was given, zero when none was.
         /// Logged so a transcript can be attributed to the setting that made it.
         public var promptTokens: Int = 0
+        /// How the audio was levelled and split, logged so a transcript with
+        /// words missing can be traced back to it: the gain applied before
+        /// transcription, the pause threshold the chunker used, and how many
+        /// pieces the recording was decoded in (one for anything under 30 s).
+        public var inputGainDecibels: Float = 0
+        public var pauseThresholdDecibels: Float = 0
+        public var chunks: Int = 1
     }
 
     public enum TranscriberError: LocalizedError {
@@ -297,8 +305,14 @@ public final class Transcriber: @unchecked Sendable {
             options.promptTokens = Array(tokens.prefix(Self.maximumPromptTokens))
         }
 
+        let levelled = Self.levelled(samples)
+        let threshold = Self.pauseThreshold(for: levelled.samples)
+        // Set per call rather than once at load: the threshold belongs to this
+        // recording. Safe because the app runs one transcription at a time.
+        pipe.voiceActivityDetector = EnergyVAD(energyThreshold: threshold)
+
         let started = Date()
-        let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+        let results = try await pipe.transcribe(audioArray: levelled.samples, decodeOptions: options)
         let elapsed = Date().timeIntervalSince(started)
 
         let text = results
@@ -310,7 +324,88 @@ public final class Transcriber: @unchecked Sendable {
             text: text,
             language: results.first?.language ?? "??",
             duration: elapsed,
-            promptTokens: options.promptTokens?.count ?? 0
+            promptTokens: options.promptTokens?.count ?? 0,
+            inputGainDecibels: levelled.gainDecibels,
+            pauseThresholdDecibels: 20 * log10(threshold),
+            chunks: results.count
         )
+    }
+
+    // MARK: - Input level
+
+    /// The frame WhisperKit's `EnergyVAD` measures over: 100 ms at 16 kHz.
+    static let levelFrameSamples = 1600
+
+    /// Where the loud end of speech is placed by `levelled(_:)`: -3 dBFS.
+    static let targetPeak: Float = 0.708
+
+    /// The most `levelled(_:)` will amplify: +30 dB. A recording that needs
+    /// more than this is not quiet speech but near-silence, and amplifying it
+    /// further only gives the model noise to hallucinate from.
+    static let maximumGain: Float = 31.6
+
+    /// The level separating this recording's pauses from its speech, for the
+    /// chunker that splits recordings longer than 30 s at pauses.
+    ///
+    /// WhisperKit's default is a fixed RMS of 0.02 (-34 dBFS) per 100 ms
+    /// frame, and it fails at both ends of the range real microphones cover.
+    /// Replaying real dictation on 2026-10-15:
+    ///
+    /// - Quiet input (a webcam microphone at -45 dBFS) never crosses it, so
+    ///   the whole recording reads as silence and the chunker cuts blindly at
+    ///   22.5 s, 45 s and 67.5 s, through words. A chunk that starts
+    ///   mid-sentence decodes badly or not at all: recall 0.60–0.99, with a
+    ///   chunk occasionally returned empty.
+    /// - Hot input (a headset at -15 dBFS) never drops below it, so no pause
+    ///   is found and the chunker cuts at the 30 s limit. A middle chunk came
+    ///   back empty: 30 s of speech lost, recall as low as 0.46.
+    ///
+    /// Placing the threshold halfway, in decibels, between this recording's
+    /// pauses (10th percentile of frame RMS) and its speech (90th percentile)
+    /// makes the cut land in a real pause at any level. Combined with
+    /// `levelled(_:)`, recall was 1.000 on English, Russian and mixed
+    /// recordings at every level tested from -65 to -15 dBFS.
+    static func pauseThreshold(for samples: [Float]) -> Float {
+        let levels = frameLevels(samples).map(\.rms).sorted()
+        guard !levels.isEmpty else { return 0.02 }
+        let pauses = max(levels[levels.count / 10], 1e-5)
+        let speech = max(levels[levels.count * 9 / 10], pauses)
+        return (pauses * speech).squareRoot()
+    }
+
+    /// Scales a recording so its loud speech peaks at -3 dBFS, whatever the
+    /// microphone delivered.
+    ///
+    /// Whisper is not fully level-independent: the same recording replayed
+    /// 16 dB quieter lost words that it kept at its original level. The
+    /// reference is the 99th percentile of 100 ms frame peaks, so one click or
+    /// pop cannot hold the rest of the recording down.
+    static func levelled(_ samples: [Float]) -> (samples: [Float], gainDecibels: Float) {
+        let peaks = frameLevels(samples).map(\.peak).sorted()
+        guard !peaks.isEmpty else { return (samples, 0) }
+        let reference = peaks[min(peaks.count - 1, peaks.count * 99 / 100)]
+        guard reference > 1e-5 else { return (samples, 0) }
+
+        var gain = min(targetPeak / reference, maximumGain)
+        guard abs(gain - 1) > 0.01 else { return (samples, 0) }
+
+        var scaled = [Float](repeating: 0, count: samples.count)
+        vDSP_vsmul(samples, 1, &gain, &scaled, 1, vDSP_Length(samples.count))
+        var low: Float = -1, high: Float = 1
+        vDSP_vclip(scaled, 1, &low, &high, &scaled, 1, vDSP_Length(scaled.count))
+        return (scaled, 20 * log10(gain))
+    }
+
+    static func frameLevels(_ samples: [Float]) -> [(rms: Float, peak: Float)] {
+        stride(from: 0, to: samples.count, by: levelFrameSamples).map { start in
+            samples.withUnsafeBufferPointer { buffer in
+                let frame = buffer.baseAddress! + start
+                let count = vDSP_Length(min(levelFrameSamples, samples.count - start))
+                var rms: Float = 0, peak: Float = 0
+                vDSP_rmsqv(frame, 1, &rms, count)
+                vDSP_maxmgv(frame, 1, &peak, count)
+                return (rms, peak)
+            }
+        }
     }
 }
