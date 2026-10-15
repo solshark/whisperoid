@@ -401,6 +401,23 @@ public final class AudioRecorder: @unchecked Sendable {
         }
     }
 
+    public enum MicrophoneAccess: Sendable, Equatable {
+        case undetermined
+        case granted
+        case denied
+    }
+
+    /// Whether the microphone may be used, without prompting for it.
+    public static var microphoneAccess: MicrophoneAccess {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: .granted
+        case .notDetermined: .undetermined
+        // Denied by the user, or restricted by a device-management profile.
+        // Either way only System Settings can change it.
+        default: .denied
+        }
+    }
+
     /// The format every recording is converted to before it reaches Whisper.
     static func makeTargetFormat() -> AVAudioFormat? {
         AVAudioFormat(

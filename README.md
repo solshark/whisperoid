@@ -17,9 +17,10 @@ remember.
 
 - An Apple Silicon Mac. Intel is not supported.
 - macOS 14 or later. Developed and tested on macOS 26 on an M3 Max.
-- About 1.5 GB of disk for the speech model, downloaded on first launch.
-- Permission to use the microphone, requested the first time you record. The app
-  asks for nothing else.
+- About 1.6 GB of disk for the speech model, downloaded on first launch once you
+  approve it.
+- Permission to use the microphone, requested from the setup window or the first
+  time you record. The app asks for nothing else.
 
 ## Getting started
 
@@ -37,12 +38,16 @@ Then, from a clone of this repository:
 open build/Whisperoid.app
 ```
 
-Whisperoid runs in the menu bar and has no Dock icon or window. On first launch
-it downloads the speech model, which takes a few minutes and reports progress in
-the menu — see [First launch on a new machine](#first-launch-on-a-new-machine)
-if it looks like it has stalled.
+Whisperoid runs in the menu bar and has no Dock icon. On first launch a setup
+window states the size of the speech model download and asks before fetching
+it, then shows its progress, asks for microphone access, and invites a first
+dictation. The download continues if the window is closed, and the window comes
+back when the download finishes or fails. See
+[First launch on a new machine](#first-launch-on-a-new-machine) if it looks like
+it has stalled.
 
-Press `⌘⌃D` to start dictating, `⌘⌃D` again to stop, then paste with `⌘V`.
+Press `⌘⌃D` (Control-Command-D) to start dictating, `⌘⌃D` again to stop, then
+paste with `⌘V`.
 `Escape` discards a recording instead of transcribing it.
 
 To keep it, drag `build/Whisperoid.app` to `/Applications`, or run
@@ -222,8 +227,8 @@ open build/Whisperoid.app --env WHISPEROID_SHOW_SETTINGS=1
 
 ```
 Sources/
-  WhisperoidCore/     Audio capture, transcription, silence detection, cleanup
-  Whisperoid/         Menu bar app, hotkeys, overlay, preferences
+  WhisperoidCore/     Audio capture, transcription, model download, silence detection, cleanup
+  Whisperoid/         Menu bar app, setup window, hotkeys, overlay, preferences
   vadcheck/           Development tool for tuning auto-stop against a recording
   cleanupcheck/       Development tool for scoring the cleanup model
 Tests/                Swift Testing suites; run with `swift test`
@@ -256,8 +261,8 @@ SwiftPM hold no Mach-O code and are sealed as resources by the app signature;
 signing them individually fails because swift-crypto's bundle has no
 `Info.plist`.
 
-The model is downloaded on first launch (about 1.5 GB) into
-`~/Library/Application Support/Whisperoid`.
+The model is downloaded on first launch (about 1.6 GB), once approved in the
+setup window, into `~/Library/Application Support/Whisperoid`.
 
 ## Usage
 
@@ -339,20 +344,30 @@ routinely dropped before `log show` can retrieve them.
 
 ### First launch on a new machine
 
-The menu bar status reports each startup phase separately, because they stall
-for entirely different reasons:
+The setup window and the menu bar status report each startup phase
+separately, because they stall for entirely different reasons:
 
 | Status | Meaning |
 | --- | --- |
+| `Speech model not downloaded yet` | Waiting for the download to be approved in the setup window |
 | `Finding model…` | Resolving the model on the remote repository |
-| `Downloading model… file N of 6` | Transferring, with bytes on disk alongside |
+| `Downloading model… 412 MB of 1.64 GB` | Transferring |
 | `Preparing model…` | Core ML compiling for this machine; no network activity |
 | `Ready` | Usable |
 
-Download progress is counted in **files, not bytes**. The model is six files
-of which `AudioEncoder.mlmodelc` is about 1.3 GB of the 1.6 GB total, so the
-file count appears frozen for most of the download. The size on disk shown
-beside it is the reliable indicator of movement.
+The download is not started until it is approved. App Store Review Guideline
+4.2.3 asks that an app which must download resources before it works state the
+size and ask first, and every build follows it, since 1.6 GB weighs the same on
+a metered connection whichever way the app was installed.
+
+Progress is measured in **bytes**, against the total from the model host's file
+listing, which is fetched before the download is offered so the size can be
+stated. WhisperKit itself reports progress in files: the model is 24 files, of
+which `AudioEncoder.mlmodelc` holds about 1.3 GB of the 1.6 GB, so a file
+count sits still for most of the download. The byte count includes files still
+in transit, which the downloader keeps under `.cache/huggingface/download` until
+they are complete. If the listing cannot be fetched, the window falls back to
+the file count and an approximate size.
 
 `Preparing model…` is Core ML compiling the model for this specific device. It
 is CPU-bound, shows no network activity at all, and on a machine that has not

@@ -23,6 +23,13 @@ struct MenuContent: View {
     var body: some View {
         Text(controller.statusText)
 
+        // The way back to the setup window after closing it part-way.
+        if !controller.isSetupComplete {
+            Button("Show Setup…") {
+                controller.showSetup()
+            }
+        }
+
         Divider()
 
         Button(controller.state == .recording ? "Stop and Transcribe" : "Start Dictation") {

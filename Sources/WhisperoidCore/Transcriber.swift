@@ -82,6 +82,10 @@ public final class Transcriber: @unchecked Sendable {
 
     public static let modelRepository = "argmaxinc/whisperkit-coreml"
 
+    /// Shown before a download when the model host cannot be asked for the
+    /// exact size. True of the default variant only.
+    public static let approximateDownloadSize = "about 1.6 GB"
+
     /// Anything shorter than this is almost always an accidental double-tap.
     public static let minimumSeconds: Double = 0.3
 
@@ -132,10 +136,43 @@ public final class Transcriber: @unchecked Sendable {
 
     /// Where the model files are expected on disk, whether or not they exist.
     public static func modelFolder(in storageDirectory: URL) -> URL {
+        repositoryFolder(in: storageDirectory)
+            .appendingPathComponent(modelVariant, isDirectory: true)
+    }
+
+    private static func repositoryFolder(in storageDirectory: URL) -> URL {
         storageDirectory
             .appendingPathComponent("models", isDirectory: true)
             .appendingPathComponent(modelRepository, isDirectory: true)
-            .appendingPathComponent(modelVariant, isDirectory: true)
+    }
+
+    /// Every folder a download of the current variant writes to, including
+    /// files still in transit.
+    ///
+    /// The downloader streams each file into `.cache/huggingface/download`
+    /// under the repository folder and moves it into the model folder only once
+    /// it is complete. Measuring the model folder alone therefore sees nothing
+    /// of the file in flight, which for the audio encoder is 1.3 GB of a
+    /// 1.6 GB download.
+    ///
+    /// The cache folder also holds the downloader's small `.metadata` files, so
+    /// a finished download measures a few hundred bytes over the size the model
+    /// host reports: 451 bytes on 2026-10-15. Progress is clamped at complete,
+    /// so this never shows.
+    public static func downloadFolders(in storageDirectory: URL) -> [URL] {
+        [
+            modelFolder(in: storageDirectory),
+            repositoryFolder(in: storageDirectory)
+                .appendingPathComponent(".cache/huggingface/download", isDirectory: true)
+                .appendingPathComponent(modelVariant, isDirectory: true),
+        ]
+    }
+
+    /// Bytes the current variant's download has put on disk so far.
+    public static func downloadedBytes(in storageDirectory: URL) -> Int64 {
+        downloadFolders(in: storageDirectory).reduce(0) {
+            $0 + Diagnostics.directorySize(at: $1)
+        }
     }
 
     public func load(

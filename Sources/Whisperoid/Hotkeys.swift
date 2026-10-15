@@ -46,6 +46,26 @@ struct Hotkey: Equatable, Codable, Sendable {
         return result + display
     }
 
+    /// The same shortcut in words, such as "Control-Command-E", for anyone who
+    /// does not read the modifier symbols. The first-launch window is where a
+    /// new user meets the shortcut, so it shows both.
+    var spelledOut: String {
+        var parts: [String] = []
+        if carbonModifiers & UInt32(controlKey) != 0 { parts.append("Control") }
+        if carbonModifiers & UInt32(optionKey) != 0 { parts.append("Option") }
+        if carbonModifiers & UInt32(shiftKey) != 0 { parts.append("Shift") }
+        if carbonModifiers & UInt32(cmdKey) != 0 { parts.append("Command") }
+        parts.append(Self.keyNames[display] ?? display)
+        return parts.joined(separator: "-")
+    }
+
+    private static let keyNames: [String: String] = [
+        "↩": "Return", "⇥": "Tab", "␣": "Space", "⌫": "Delete",
+        "⌦": "Forward Delete", "⎋": "Escape", "↖": "Home", "↘": "End",
+        "⇞": "Page Up", "⇟": "Page Down", "←": "Left Arrow",
+        "→": "Right Arrow", "↑": "Up Arrow", "↓": "Down Arrow",
+    ]
+
     /// True when macOS has already reserved this combination system-wide.
     var isTakenBySystem: Bool {
         var raw: Unmanaged<CFArray>?

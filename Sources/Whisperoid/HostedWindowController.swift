@@ -69,6 +69,12 @@ final class HostedWindowController<Content: View>: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Closes as the title-bar button would, so `windowWillClose` restores the
+    /// accessory activation policy exactly as it does for a manual close.
+    func close() {
+        window?.performClose(nil)
+    }
+
     func windowWillClose(_ notification: Notification) {
         // Only drop back to accessory once nothing of ours is still open, or
         // closing one window would remove the Dock icon while another remains.

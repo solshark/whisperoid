@@ -58,8 +58,31 @@ final class AppController {
     private(set) var lastErrorText: String?
     private var phaseChangedAt = Date()
     private var loggedDownloadPercent = -1
-    private var downloadedBytes: Int64 = 0
     private var watchdog: Timer?
+
+    /// Byte-level progress of the model download, shown in the setup window.
+    /// Nil when the model was already on disk and nothing is being fetched.
+    private(set) var download: DownloadProgress?
+    /// Size of the model download, from the model host. Shown before the
+    /// download is approved, and the progress bar's total during it.
+    private(set) var downloadSize: Int64?
+    /// True while the model is missing and the user has not yet agreed to
+    /// download it.
+    private(set) var awaitingDownloadApproval = false
+    @ObservationIgnored private var isLookingUpDownloadSize = false
+    /// Set when this launch downloaded the model, as opposed to finding it on
+    /// disk, so the end of that download can be brought to the user's notice.
+    @ObservationIgnored private var downloadedThisSession = false
+    /// Seconds spent so far in Core ML preparation, which reports no progress
+    /// of its own. Advanced by the progress timer.
+    private(set) var preparingSeconds = 0
+    /// Why the model could not be made ready, until a retry succeeds.
+    private(set) var modelError: String?
+    private(set) var microphoneAccess = AudioRecorder.microphoneAccess
+    @ObservationIgnored private var downloadMeter = DownloadMeter()
+    @ObservationIgnored private var preparingSince: Date?
+    @ObservationIgnored private var progressTimer: Timer?
+    @ObservationIgnored private var loggedDownloadBytes: Int64 = -1
 
     let preferences = Preferences()
 
@@ -77,6 +100,7 @@ final class AppController {
     @ObservationIgnored private var settingsWindow: HostedWindowController<SettingsView>?
     @ObservationIgnored private var aboutWindow: HostedWindowController<AboutView>?
     @ObservationIgnored private var acknowledgementsWindow: HostedWindowController<AcknowledgementsView>?
+    @ObservationIgnored private var setupWindow: HostedWindowController<SetupView>?
     private var tickTimer: Timer?
     private var silenceDetector: SilenceDetector?
     /// Nil only when the support directory cannot be created, in which case
@@ -120,6 +144,37 @@ final class AppController {
         }
         acknowledgementsWindow?.show()
     }
+
+    func showSetup() {
+        refreshMicrophoneAccess()
+        if setupWindow == nil {
+            setupWindow = HostedWindowController(
+                title: "Welcome to Whisperoid",
+                diagnosticName: "setup"
+            ) { [unowned self] in
+                SetupView(controller: self, onClose: { [unowned self] in
+                    self.setupWindow?.close()
+                })
+            }
+        }
+        setupWindow?.show()
+    }
+
+    /// Whether the app has what it needs to dictate: the model on disk and the
+    /// microphone allowed.
+    ///
+    /// Derived from the state of the machine rather than remembered as "setup
+    /// was completed once". A deleted model folder, or a build signed by a
+    /// different team, which macOS treats as a different app and so asks about
+    /// the microphone again, both bring back a step that genuinely needs doing.
+    static var isSetUp: Bool {
+        Transcriber.localModel(in: Paths.supportDirectory) != nil
+            && AudioRecorder.microphoneAccess == .granted
+    }
+
+    var isModelReady: Bool { loadPhase == .ready }
+
+    var isSetupComplete: Bool { isModelReady && microphoneAccess == .granted }
 
     init() {
         embeddedCleaner = (try? Paths.ensureSupportDirectory()).map {
@@ -170,6 +225,15 @@ final class AppController {
             }
         }
 
+        // A first launch otherwise leaves the user with an hourglass in the menu
+        // bar and nothing to say that 1.6 GB is on its way.
+        if environment["WHISPEROID_SHOW_SETUP"] != nil || !Self.isSetUp {
+            Task {
+                try? await Task.sleep(for: .milliseconds(800))
+                showSetup()
+            }
+        }
+
         Task {
             await loadModel()
             if ProcessInfo.processInfo.environment["WHISPEROID_DUMP_DIAGNOSTICS"] != nil {
@@ -180,18 +244,41 @@ final class AppController {
 
     // MARK: - Model
 
-    private func loadModel() async {
+    /// Loads the model, downloading it first only with the user's go-ahead.
+    ///
+    /// The download is 1.6 GB, and App Store Review Guideline 4.2.3 asks that
+    /// an app which must download resources before it works on first launch
+    /// disclose the size and ask before doing so. Every build asks, rather than
+    /// only the App Store one: a direct download is no less 1.6 GB on a
+    /// metered connection.
+    private func loadModel(downloadApproved: Bool = false) async {
+        if !downloadApproved, Transcriber.localModel(in: Paths.supportDirectory) == nil {
+            awaitingDownloadApproval = true
+            Log.info("startup: model not on disk; waiting for the download to be approved")
+            lookUpDownloadSize()
+            return
+        }
+
         let started = Date()
         startWatchdog()
-        defer { stopWatchdog() }
+        startProgressTimer()
+        defer {
+            stopWatchdog()
+            stopProgressTimer()
+            preparingSince = nil
+            download = nil
+        }
 
         do {
             let directory = try Paths.ensureSupportDirectory()
+            let cached = Transcriber.localModel(in: directory) != nil
             Log.info("startup: variant=\(Transcriber.modelVariant) storage=\(directory.path)")
             Log.info("startup: model folder \(Transcriber.modelFolder(in: directory).path)")
-            Log.info(Transcriber.localModel(in: directory) != nil
+            Log.info(cached
                 ? "startup: model already on disk, skipping network"
                 : "startup: model not cached, will download")
+
+            if !cached { beginDownloadTracking() }
 
             try await transcriber.load(storageDirectory: directory) { [weak self] phase in
                 Task { @MainActor in self?.apply(phase) }
@@ -199,7 +286,9 @@ final class AppController {
 
             Log.info(String(format: "startup: ready in %.2f s", Date().timeIntervalSince(started)))
             lastErrorText = nil
+            modelError = nil
             state = .idle
+            announceDownloadOutcome()
 
             // Warm the cleanup model when it is already the chosen mode, so the
             // first dictation of a session is not the one that pays for the
@@ -211,13 +300,96 @@ final class AppController {
             Log.error(String(format: "startup: failed after %.2f s during %@: %@",
                              elapsed, loadPhase.description, String(describing: error)))
             lastErrorText = "\(error)"
+            modelError = error.localizedDescription
             state = .failed("Model load failed: \(error.localizedDescription)")
+            announceDownloadOutcome()
         }
+    }
+
+    /// Brings the end of a download to the user's notice, whichever way it
+    /// went.
+    ///
+    /// A download left running with "Continue in Background" otherwise ends
+    /// with nobody watching: the menu bar icon changes and nothing else does. A
+    /// failure is worse, discovered only when the shortcut later beeps. The
+    /// setup window comes back showing the outcome and whatever steps are still
+    /// open, and the Dock icon bounces once in case the user is in another app.
+    /// A notification would need yet another permission prompt; this needs
+    /// none.
+    private func announceDownloadOutcome() {
+        guard downloadedThisSession else { return }
+        downloadedThisSession = false
+        showSetup()
+
+        // The Dock icon only exists once `showSetup` has switched the app to the
+        // regular activation policy, which takes effect a runloop turn later.
+        // The request does nothing if the user is already looking at the app.
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            NSApp.requestUserAttention(.informationalRequest)
+        }
+    }
+
+    /// Tries again after a failed load. A download that was cut off resumes
+    /// from the bytes already on disk rather than starting over.
+    func retryModelLoad() {
+        guard modelError != nil, state != .loading else { return }
+        modelError = nil
+        loadPhase = .locating
+        state = .loading
+        // Pressing Try Again is itself the go-ahead for the download.
+        Task { await loadModel(downloadApproved: true) }
+    }
+
+    /// The user's go-ahead for the model download.
+    func approveModelDownload() {
+        guard awaitingDownloadApproval else { return }
+        awaitingDownloadApproval = false
+        Log.info("startup: download approved")
+        Task { await loadModel(downloadApproved: true) }
+    }
+
+    /// Asks the model host how big the download is, once.
+    ///
+    /// Only the file listing is fetched, a few kilobytes, so this can run
+    /// before the download is approved. A slow or failed answer must not hold
+    /// anything up: the download proceeds without a total, and the approval
+    /// prompt falls back to an approximate size.
+    private func lookUpDownloadSize() {
+        guard downloadSize == nil, !isLookingUpDownloadSize else { return }
+        isLookingUpDownloadSize = true
+        Task {
+            defer { isLookingUpDownloadSize = false }
+            do {
+                let total = try await ModelCatalog.downloadSize(
+                    repository: Transcriber.modelRepository,
+                    variant: Transcriber.modelVariant
+                )
+                downloadSize = total
+                download?.totalBytes = total
+                Log.info("startup: download size \(total) bytes")
+            } catch {
+                Log.error("startup: download size unavailable: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Starts byte-level tracking of a download that is about to begin.
+    private func beginDownloadTracking() {
+        downloadedThisSession = true
+        download = DownloadProgress(totalBytes: downloadSize)
+        downloadMeter = DownloadMeter()
+        lookUpDownloadSize()
     }
 
     private func apply(_ phase: Transcriber.Phase) {
         loadPhase = phase
         phaseChangedAt = Date()
+
+        if case .preparing = phase, preparingSince == nil {
+            preparingSince = Date()
+            preparingSeconds = 0
+        }
 
         switch phase {
         case .downloading(let fraction, let completedFiles, let totalFiles):
@@ -242,12 +414,12 @@ final class AppController {
         let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.state == .loading else { return }
-                self.measureDownloadedBytes()
+                self.logDownloadedBytes()
 
                 let stalled = Date().timeIntervalSince(self.phaseChangedAt)
                 guard stalled >= Self.stallWarningSeconds else { return }
                 Log.info(String(format: "startup: no file-count change for %.0f s during %@ (%lld bytes on disk)",
-                                stalled, self.loadPhase.description, self.downloadedBytes))
+                                stalled, self.loadPhase.description, self.download?.bytes ?? 0))
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -259,18 +431,58 @@ final class AppController {
         watchdog = nil
     }
 
-    /// File-count progress sits still while one large file transfers, so the
-    /// size on disk is what shows the download is actually moving.
-    private func measureDownloadedBytes() {
-        let folder = Transcriber.modelFolder(in: Paths.supportDirectory)
+    /// Logged on the watchdog's slow beat rather than on every sample, so the
+    /// unified log shows the download moving without being flooded by it.
+    private func logDownloadedBytes() {
+        guard let download, download.bytes != loggedDownloadBytes else { return }
+        loggedDownloadBytes = download.bytes
+        let total = download.totalBytes.map { "\($0)" } ?? "unknown"
+        Log.info("startup: \(download.bytes) of \(total) bytes on disk")
+    }
+
+    /// Samples the download and the preparation clock twice a second, for the
+    /// setup window. Kept apart from the watchdog, which beats slowly because
+    /// its job is the log, not the display.
+    private func startProgressTimer() {
+        stopProgressTimer()
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tickProgress() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        progressTimer = timer
+    }
+
+    private func stopProgressTimer() {
+        progressTimer?.invalidate()
+        progressTimer = nil
+    }
+
+    private func tickProgress() {
+        if let preparingSince {
+            let seconds = Int(Date().timeIntervalSince(preparingSince))
+            if seconds != preparingSeconds { preparingSeconds = seconds }
+            return
+        }
+        guard download != nil else { return }
+
+        // File-count progress sits still while one large file transfers, so the
+        // size on disk, in-flight files included, is what shows the download
+        // actually moving.
+        let directory = Paths.supportDirectory
         Task.detached(priority: .utility) {
-            let bytes = Diagnostics.directorySize(at: folder)
+            let bytes = Transcriber.downloadedBytes(in: directory)
             await MainActor.run { [weak self] in
-                guard let self, bytes != self.downloadedBytes else { return }
-                self.downloadedBytes = bytes
-                Log.info("startup: \(bytes) bytes on disk")
+                self?.recordDownload(bytes: bytes)
             }
         }
+    }
+
+    private func recordDownload(bytes: Int64) {
+        guard var progress = download else { return }
+        downloadMeter.record(bytes: bytes, at: ProcessInfo.processInfo.systemUptime)
+        progress.bytes = bytes
+        progress.bytesPerSecond = downloadMeter.bytesPerSecond
+        download = progress
     }
 
     // MARK: - Support
@@ -334,7 +546,11 @@ final class AppController {
         Task {
             defer { isStartingRecording = false }
 
-            guard await AudioRecorder.requestMicrophoneAccess() else {
+            let granted = await AudioRecorder.requestMicrophoneAccess()
+            // The first dictation may be what prompted for access, and the setup
+            // window, if open, should reflect the answer.
+            refreshMicrophoneAccess()
+            guard granted else {
                 fail("Microphone access denied. Enable it in System Settings > Privacy & Security > Microphone.")
                 return
             }
@@ -664,6 +880,30 @@ final class AppController {
         recordedSeconds = 0
     }
 
+    // MARK: - Microphone access
+
+    func requestMicrophoneAccess() {
+        Task {
+            _ = await AudioRecorder.requestMicrophoneAccess()
+            refreshMicrophoneAccess()
+        }
+    }
+
+    /// macOS sends no notification when the permission changes, so this is
+    /// re-read whenever the answer might be different: the setup window
+    /// appearing, the app becoming active again after a trip to System
+    /// Settings, and a dictation having asked.
+    func refreshMicrophoneAccess() {
+        let current = AudioRecorder.microphoneAccess
+        if current != microphoneAccess { microphoneAccess = current }
+    }
+
+    func openMicrophoneSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     // MARK: - Launch at login
 
     /// Settable projection so SwiftUI can bind through `@Bindable`.
@@ -759,7 +999,8 @@ final class AppController {
     /// microphone sitting next to it is redundant and confusing.
     var iconName: String {
         switch state {
-        case .loading: "hourglass"
+        // Waiting on the user rather than on work, so not an hourglass.
+        case .loading: awaitingDownloadApproval ? "arrow.down.circle" : "hourglass"
         case .idle: "waveform"
         case .recording: "waveform.circle.fill"
         case .transcribing: "ellipsis.circle"
@@ -770,9 +1011,13 @@ final class AppController {
     var statusText: String {
         switch state {
         case .loading:
-            downloadedBytes > 0
-                ? "\(loadPhase.description) · \(ByteCountFormatter.string(fromByteCount: downloadedBytes, countStyle: .file)) on disk"
-                : loadPhase.description
+            if awaitingDownloadApproval {
+                "Speech model not downloaded yet"
+            } else if case .downloading = loadPhase, let download {
+                "Downloading model… \(download.amountDescription)"
+            } else {
+                loadPhase.description
+            }
         case .idle:
             history.first.map {
                 String(format: "Ready — last: %@, %.2f s", $0.language, $0.duration)
@@ -788,5 +1033,10 @@ final class AppController {
 
     var shortcutDescription: String {
         HotkeyCenter.shared.shortcut(for: .toggleDictation)?.description ?? "unassigned"
+    }
+
+    /// Nil when no dictation shortcut is assigned.
+    var shortcutSpelledOut: String? {
+        HotkeyCenter.shared.shortcut(for: .toggleDictation)?.spelledOut
     }
 }
