@@ -177,6 +177,15 @@ struct HubModelDownloader: Downloader {
         useLatest: Bool,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> URL {
+        // As the protocol asks, a complete local copy is used as it is unless
+        // the caller wants the latest. The Hugging Face client would otherwise
+        // check every file with the server on each load, including the reload
+        // after an idle unload, whenever the Mac is online. The speech model is
+        // treated the same way (`Transcriber.localModel`).
+        if !useLatest, let folder = Self.completeCopy(at: localFolder(for: id)) {
+            return folder
+        }
+
         // Kept beside the speech model rather than in the Hugging Face default
         // of ~/Documents/huggingface, which the app does not own and which is
         // surprising to find several gigabytes in.
@@ -186,6 +195,37 @@ struct HubModelDownloader: Downloader {
             matching: patterns,
             progressHandler: progressHandler
         )
+    }
+
+    /// Where the Hugging Face client puts a model repository under
+    /// `storageDirectory`, whether or not it has been downloaded.
+    func localFolder(for id: String) -> URL {
+        storageDirectory
+            .appendingPathComponent("models", isDirectory: true)
+            .appendingPathComponent(id, isDirectory: true)
+    }
+
+    /// The folder, if it holds everything needed to load the model.
+    ///
+    /// That is the configuration, the tokenizer and every weight file the
+    /// index names, or the single weight file when there is no index. The
+    /// Hugging Face client writes each file elsewhere and moves it into place
+    /// only once it is complete, so an interrupted download fails this check
+    /// and is resumed.
+    static func completeCopy(at folder: URL) -> URL? {
+        let manager = FileManager.default
+        func has(_ name: String) -> Bool {
+            manager.fileExists(atPath: folder.appendingPathComponent(name).path)
+        }
+
+        guard ["config.json", "tokenizer.json", "tokenizer_config.json"].allSatisfy(has) else {
+            return nil
+        }
+        let index = (try? Data(contentsOf: folder.appendingPathComponent("model.safetensors.index.json")))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let weights = (index?["weight_map"] as? [String: String]).map { Set($0.values) }
+            ?? ["model.safetensors"]
+        return !weights.isEmpty && weights.allSatisfy(has) ? folder : nil
     }
 }
 
