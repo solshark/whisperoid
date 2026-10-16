@@ -54,6 +54,14 @@ paste with `⌘V`.
 To keep it, drag `build/Whisperoid.app` to `/Applications`, or run
 `./scripts/package.sh` to produce a disk image.
 
+Whisperoid's bundle ID changed from `com.solshark.whisperoid` to
+`online.blackmeridian.whisperoid` when its signing moved to Black Meridian's
+team. macOS treats the renamed app as a new application: the setup window asks
+for microphone access again, and Launch at Login has to be switched on again in
+Settings. Every other setting is imported from the old bundle ID on the first
+launch. The old entries can be removed from System Settings > Privacy & Security
+> Microphone and from General > Login Items.
+
 ## Licence
 
 Whisperoid is MIT licensed; see `LICENSE`.
@@ -398,8 +406,8 @@ LaunchServices has no terminal attached, so stderr is discarded exactly when it
 would be most useful.
 
 ```sh
-/usr/bin/log stream --predicate 'subsystem == "com.solshark.whisperoid"'
-/usr/bin/log show --predicate 'subsystem == "com.solshark.whisperoid"' --last 5m --style compact
+/usr/bin/log stream --predicate 'subsystem == "online.blackmeridian.whisperoid"'
+/usr/bin/log show --predicate 'subsystem == "online.blackmeridian.whisperoid"' --last 5m --style compact
 ```
 
 To debug lost words, `WHISPEROID_KEEP_RECORDINGS=1 ./scripts/build-app.sh`

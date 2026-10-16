@@ -95,7 +95,7 @@ public final class AudioRecorder: @unchecked Sendable {
     private var engineQueue = AudioRecorder.makeEngineQueue()
 
     private static func makeEngineQueue() -> DispatchQueue {
-        DispatchQueue(label: "com.solshark.whisperoid.audio-engine")
+        DispatchQueue(label: "online.blackmeridian.whisperoid.audio-engine")
     }
 
     /// Incremented whenever a queue is abandoned, which makes every reference to
@@ -114,7 +114,7 @@ public final class AudioRecorder: @unchecked Sendable {
 
     /// Runs the deadline timers. Never touches the engine, so it stays
     /// responsive precisely when the audio queue does not.
-    private let watchdogQueue = DispatchQueue(label: "com.solshark.whisperoid.audio-engine-watchdog")
+    private let watchdogQueue = DispatchQueue(label: "online.blackmeridian.whisperoid.audio-engine-watchdog")
 
     /// Rebuilt for every recording, so each one resolves the input device as it
     /// stands rather than as it was. Confined to `engineQueue`, as is
@@ -141,7 +141,7 @@ public final class AudioRecorder: @unchecked Sendable {
 
     /// Delivers capture callbacks. Separate from `engineQueue` so a sample
     /// arriving never waits behind a device operation.
-    private let sampleQueue = DispatchQueue(label: "com.solshark.whisperoid.audio-samples")
+    private let sampleQueue = DispatchQueue(label: "online.blackmeridian.whisperoid.audio-samples")
 
     private let lock = NSLock()
 
