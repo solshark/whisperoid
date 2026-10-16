@@ -25,3 +25,18 @@ backup/
 # Model-evaluation scratch. Kept locally; the findings that mattered are in
 # the README and in the comments on defaultGlossary.
 spike/
+
+# Signing material and fastlane output. Nothing secret belongs in this public
+# repository: certificates and keys live in the studio's encrypted match
+# repository and the login keychain.
+.env
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.ipa
+*.pkg
+*.dSYM.zip
+fastlane/report.xml
+fastlane/README.md

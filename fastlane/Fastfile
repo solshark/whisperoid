@@ -1,0 +1,22 @@
+# Whisperoid's release lanes: Black Meridian's shared signing lanes, pinned to a tagged version
+# (https://github.com/solshark/blackmeridian-fastlane, private). They work only on the studio's
+# machines; anyone else builds and signs with scripts/build-app.sh and scripts/package.sh. Run them
+# with `bundle exec fastlane <lane>`:
+#
+#   certs        installs the Developer ID certificate from match, read-only
+#   release_dmg  builds the disk image signed with Developer ID, verifies it, and after asking
+#                notarises and staples it and checks it with Gatekeeper
+#   verify       checks a signed product: path:<app or disk image>
+#   import_cert  imports a certificate made in the developer portal into match; asks first
+
+import_from_git(url: "https://github.com/solshark/blackmeridian-fastlane.git", version: "0.2.0",
+                dependencies: ["lib/blackmeridian/signing.rb"])
+
+blackmeridian_project(
+  bundle_id: "online.blackmeridian.whisperoid",
+  platform: :macos,
+  match_types: %w[developer_id],
+  no_profile_types: %w[developer_id],
+  macos: { package: ["scripts/package.sh"], identity_env: "WHISPEROID_SIGN_IDENTITY",
+           app: "build/Whisperoid.app", dmg: "dist/Whisperoid-%{version}.dmg" }
+)

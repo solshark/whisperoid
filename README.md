@@ -509,6 +509,12 @@ WHISPEROID_NOTARY_PROFILE=whisperoid ./scripts/package.sh
 The disk image is signed with the same identity as the app, under the app's
 bundle ID, with a secure timestamp.
 
+Black Meridian's own releases are made with `bundle exec fastlane release_dmg`,
+which signs with the studio's Developer ID, notarises, staples, and checks the
+result with Gatekeeper before anything is published. It uses the studio's
+private signing lanes and certificates, so it works only on the studio's
+machines.
+
 Without that certificate the image still works, but the recipient must clear
 the quarantine flag once after dragging the app across:
 
