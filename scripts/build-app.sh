@@ -10,6 +10,9 @@
 # Environment:
 #   CONFIG                     debug | release (default: release)
 #   WHISPEROID_SIGN_IDENTITY   codesign identity to use
+#   WHISPEROID_KEEP_RECORDINGS 1 builds the debugging variant that keeps every
+#                              recording and its transcript on disk; see
+#                              RecordingArchive. Never distribute such a build.
 
 set -euo pipefail
 
@@ -65,6 +68,12 @@ esac
 
 DERIVED="$ROOT/.build/xcode"
 
+CONDITIONS=()
+if [[ "${WHISPEROID_KEEP_RECORDINGS:-}" == "1" ]]; then
+	CONDITIONS=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) KEEP_RECORDINGS')
+	echo "warning: building the debugging variant that keeps every recording on disk" >&2
+fi
+
 xcodebuild build \
 	-scheme Whisperoid \
 	-destination 'platform=macOS' \
@@ -72,6 +81,7 @@ xcodebuild build \
 	-configuration "$XCCONFIG" \
 	-skipPackagePluginValidation \
 	-skipMacroValidation \
+	${CONDITIONS[@]+"${CONDITIONS[@]}"} \
 	>/dev/null
 
 BIN_DIR="$DERIVED/Build/Products/$XCCONFIG"
@@ -99,6 +109,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/Whisperoid"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+
+# Shown in About, so the variant is never mistaken for a release.
+if [[ "${WHISPEROID_KEEP_RECORDINGS:-}" == "1" ]]; then
+	version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version-recordings" "$APP/Contents/Info.plist"
+fi
 
 # Referenced by CFBundleIconFile. Regenerate with scripts/make-icon.swift.
 if [[ -f "$ROOT/Resources/Whisperoid.icns" ]]; then

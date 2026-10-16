@@ -129,15 +129,7 @@ struct ReplayCheck {
     // MARK: - Audio
 
     static func loadClip(_ path: String) throws -> [Float] {
-        let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
-        guard file.processingFormat.sampleRate == 16000, file.processingFormat.channelCount == 1 else {
-            throw NSError(domain: "replaycheck", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "\(path) is not 16 kHz mono"])
-        }
-        let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
-                                      frameCapacity: AVAudioFrameCount(file.length))!
-        try file.read(into: buffer)
-        return Array(UnsafeBufferPointer(start: buffer.floatChannelData![0], count: Int(buffer.frameLength)))
+        try RecordingArchive.loadAudio(from: URL(fileURLWithPath: path))
     }
 
     /// Joins clips with pauses of noise at the level of the first clip's

@@ -277,6 +277,9 @@ final class AppController {
             let directory = try Paths.ensureSupportDirectory()
             let cached = Transcriber.localModel(in: directory) != nil
             Log.info("startup: variant=\(Transcriber.modelVariant) storage=\(directory.path)")
+            #if KEEP_RECORDINGS
+            Log.info("startup: debug build, keeping every recording in \(RecordingArchive.directory.path)")
+            #endif
             Log.info("startup: model folder \(Transcriber.modelFolder(in: directory).path)")
             Log.info(cached
                 ? "startup: model already on disk, skipping network"
@@ -624,6 +627,11 @@ final class AppController {
             let samples = await recorder.stop()
             let seconds = Double(samples.count) / AudioRecorder.targetSampleRate
 
+            #if KEEP_RECORDINGS
+            let archiveName = RecordingArchive.baseName(for: Date())
+            keep { try RecordingArchive.saveAudio(samples, named: archiveName) }
+            #endif
+
             // The two numbers that separate "the microphone gave us nothing"
             // from "the transcriber did nothing with it", and both of those
             // from "the microphone was open but heard almost nothing". All
@@ -673,6 +681,9 @@ final class AppController {
                     samples: samples,
                     glossary: preferences.promptWithGlossary ? preferences.glossaryTerms : []
                 )
+                #if KEEP_RECORDINGS
+                keep { try RecordingArchive.saveText(output.text, named: archiveName) }
+                #endif
                 guard !output.text.isEmpty else {
                     fail("Nothing was transcribed.")
                     return
@@ -1051,6 +1062,18 @@ final class AppController {
         RunLoop.main.add(timer, forMode: .common)
         tickTimer = timer
     }
+
+    #if KEEP_RECORDINGS
+    /// Debug builds only; see `RecordingArchive`. A failure to save is logged
+    /// and otherwise ignored, so it can never cost the user a dictation.
+    private func keep(_ save: () throws -> URL) {
+        do {
+            Log.info("debug: kept \(try save().lastPathComponent)")
+        } catch {
+            Log.error("debug: could not keep the recording: \(error.localizedDescription)")
+        }
+    }
+    #endif
 
     /// Reopens an input device that has sent only silence, so that macOS asks
     /// it for its microphone again.

@@ -383,6 +383,14 @@ would be most useful.
 /usr/bin/log show --predicate 'subsystem == "com.solshark.whisperoid"' --last 5m --style compact
 ```
 
+To debug lost words, `WHISPEROID_KEEP_RECORDINGS=1 ./scripts/build-app.sh`
+builds a variant that keeps every recording as a 32-bit float WAV, with its
+transcript beside it, in `~/Library/Application Support/Whisperoid/recordings`,
+named by the time the recording stopped. `replaycheck --clips` replays one
+exactly. Its version reads `-recordings` in About. It writes audio to disk,
+which a normal build never does, so it is for the developer's own machine and
+must not be distributed.
+
 Use the absolute path. `log` is shadowed in some shells, and the resulting
 error is easy to mistake for an empty result. Messages are emitted at `notice`
 rather than `info`, because info-level entries are held in memory only and are
