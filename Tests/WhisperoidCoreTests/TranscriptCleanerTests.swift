@@ -95,6 +95,7 @@ struct SpellingCleanerSafetyTests {
         let result = SpellingCleaner().clean(text, language: "en")
         #expect(result.text.contains("Kolyma"))
         #expect(!result.text.contains("Cholera"))
+        #expect(result.rejected.allSatisfy { $0.kind == .spelling })
     }
 
     @MainActor
@@ -127,6 +128,7 @@ struct VocabularyGuardTests {
             glossary: glossary
         )
         #expect(!verdict.accepted)
+        #expect(verdict.reasons.map(\.kind) == [.punctuation])
     }
 
     @Test("A question mark may not become a full stop")
@@ -137,6 +139,7 @@ struct VocabularyGuardTests {
             glossary: glossary
         )
         #expect(!verdict.accepted)
+        #expect(verdict.reasons.map(\.kind) == [.punctuation])
     }
 
     @Test("Punctuation may be added or changed, just not removed")
@@ -177,6 +180,7 @@ struct VocabularyGuardTests {
         )
         #expect(!verdict.accepted)
         #expect(verdict.text == "migrate the postgres container")
+        #expect(verdict.reasons == [Refusal(kind: .invented, detail: "invented “PostgreSQL”")])
     }
 
     @Test("Splitting a run-together word is allowed")
@@ -197,6 +201,7 @@ struct VocabularyGuardTests {
             glossary: glossary
         )
         #expect(!verdict.accepted)
+        #expect(verdict.reasons.map(\.kind) == [.dropped])
     }
 
     @Test("Punctuation and capitalisation changes pass")
@@ -207,6 +212,50 @@ struct VocabularyGuardTests {
             glossary: glossary
         )
         #expect(verdict.accepted)
+    }
+}
+
+/// Refused corrections are logged, and log entries are public: the words of a
+/// dictation may appear only when the user has asked for them.
+struct RefusalLoggingTests {
+
+    private let refusals = [
+        Refusal(kind: .spelling, detail: "Kolyma → Cholera"),
+        Refusal(kind: .spelling, detail: "Postgre → Poster"),
+        Refusal(kind: .invented, detail: "invented “PostgreSQL”"),
+    ]
+    private let words = ["Kolyma", "Cholera", "Postgre", "Poster", "PostgreSQL"]
+
+    @Test("Refusals are counted by kind")
+    func summaryCountsByKind() {
+        #expect(Refusal.summary(of: refusals) == "2 spelling suggestions, 1 invented word")
+        #expect(Refusal.summary(of: [Refusal(kind: .dropped, detail: "dropped “Docker”")])
+            == "1 dropped glossary term")
+    }
+
+    @Test("By default the log holds the counts and none of the dictated words")
+    func logHoldsNoWordsByDefault() {
+        let lines = Refusal.logLines(for: refusals, mode: "spelling", includingWords: false)
+
+        #expect(lines == ["cleanup[spelling] refused 2 spelling suggestions, 1 invented word"])
+        for word in words {
+            #expect(!lines.joined().contains(word), "\(word) reached the log")
+        }
+    }
+
+    @Test("With the comparison switched on the refused words are logged too")
+    func logHoldsWordsWhenAsked() throws {
+        let lines = Refusal.logLines(for: refusals, mode: "spelling", includingWords: true)
+
+        try #require(lines.count == 2)
+        for word in words {
+            #expect(lines[1].contains(word), "\(word) is missing")
+        }
+    }
+
+    @Test("Nothing refused, nothing logged")
+    func nothingRefusedLogsNothing() {
+        #expect(Refusal.logLines(for: [], mode: "spelling", includingWords: true).isEmpty)
     }
 }
 

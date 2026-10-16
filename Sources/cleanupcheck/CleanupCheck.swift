@@ -94,7 +94,7 @@ struct CleanupCheck {
                              testCase.id, result.duration, corrected.count,
                              testCase.mustFix.count, lost.count, verdict))
                 if !lost.isEmpty { print("      LOST: \(lost)") }
-                if !result.rejected.isEmpty { print("      REJECTED: \(result.rejected)") }
+                if !result.rejected.isEmpty { print("      REJECTED: \(result.rejected.map(\.detail))") }
                 if result.changed { print("      OUT: \(got)") }
             }
 

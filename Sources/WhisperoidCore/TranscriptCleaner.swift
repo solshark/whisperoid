@@ -28,6 +28,66 @@ public enum CleanupMode: String, CaseIterable, Sendable, Identifiable {
     }
 }
 
+/// A correction the cleanup refused, and what kind of correction it was.
+///
+/// The kind describes the mechanism and may be logged freely. The detail names
+/// the words involved, which come from the dictation, so it is logged only when
+/// the user has asked for the text before and after cleanup to be recorded.
+public struct Refusal: Sendable, Equatable {
+    public enum Kind: String, Sendable, CaseIterable {
+        /// The spelling checker's suggestion failed the rule for a safe
+        /// replacement.
+        case spelling
+        /// The model put in a word that is neither in the transcript nor in the
+        /// glossary.
+        case invented
+        /// The model took out a glossary term.
+        case dropped
+        /// The model took out punctuation.
+        case punctuation
+
+        func counted(_ count: Int) -> String {
+            let noun = switch self {
+            case .spelling: "spelling suggestion"
+            case .invented: "invented word"
+            case .dropped: "dropped glossary term"
+            case .punctuation: "punctuation change"
+            }
+            return "\(count) \(noun)\(count == 1 ? "" : "s")"
+        }
+    }
+
+    public let kind: Kind
+    /// What was refused, in the dictation's own words.
+    public let detail: String
+
+    public init(kind: Kind, detail: String) {
+        self.kind = kind
+        self.detail = detail
+    }
+
+    /// How many corrections of each kind were refused, without the words: for
+    /// example "2 spelling suggestions, 1 invented word".
+    public static func summary(of refusals: [Refusal]) -> String {
+        Kind.allCases.compactMap { kind in
+            let count = refusals.filter { $0.kind == kind }.count
+            return count == 0 ? nil : kind.counted(count)
+        }.joined(separator: ", ")
+    }
+
+    /// What the application logs about refusals: how many of each kind, always,
+    /// and the refused words only when `includingWords` is set. Log entries are
+    /// public, so words from a dictation go in only when the user has asked.
+    public static func logLines(for refusals: [Refusal], mode: String, includingWords: Bool) -> [String] {
+        guard !refusals.isEmpty else { return [] }
+        var lines = ["cleanup[\(mode)] refused \(summary(of: refusals))"]
+        if includingWords {
+            lines.append("cleanup[\(mode)] refused: " + refusals.map(\.detail).joined(separator: "; "))
+        }
+        return lines
+    }
+}
+
 /// The outcome of a cleanup pass.
 ///
 /// `original` is carried alongside `text` because the point of this feature is
@@ -41,7 +101,7 @@ public struct CleanupResult: Sendable {
     public let duration: TimeInterval
     /// Set when a candidate replacement was refused, naming what was rejected.
     /// Reported rather than hidden so a guard firing constantly is visible.
-    public let rejected: [String]
+    public let rejected: [Refusal]
 
     public var changed: Bool { text != original }
 
@@ -50,7 +110,7 @@ public struct CleanupResult: Sendable {
         original: String,
         mode: CleanupMode,
         duration: TimeInterval = 0,
-        rejected: [String] = []
+        rejected: [Refusal] = []
     ) {
         self.text = text
         self.original = original
@@ -112,7 +172,7 @@ public struct SpellingCleaner: Sendable {
         let checker = NSSpellChecker.shared
         let ns = text as NSString
         var corrections: [(NSRange, String)] = []
-        var rejected: [String] = []
+        var rejected: [Refusal] = []
         var location = 0
 
         while location < ns.length {
@@ -142,7 +202,7 @@ public struct SpellingCleaner: Sendable {
             if let best = guesses.first, Self.isSafeReplacement(best, for: word) {
                 corrections.append((range, best))
             } else if let best = guesses.first {
-                rejected.append("\(word) → \(best)")
+                rejected.append(Refusal(kind: .spelling, detail: "\(word) → \(best)"))
             }
         }
 
@@ -311,7 +371,7 @@ public enum VocabularyGuard {
     public struct Verdict: Sendable {
         public let accepted: Bool
         public let text: String
-        public let reasons: [String]
+        public let reasons: [Refusal]
     }
 
     public static func check(
@@ -326,7 +386,8 @@ public enum VocabularyGuard {
             let lower = word.lowercased()
             if source.contains(lower) || allowed.contains(lower) { continue }
             if source.contains(where: { $0.count > lower.count && $0.contains(lower) }) { continue }
-            return Verdict(accepted: false, text: original, reasons: ["invented “\(word)”"])
+            return Verdict(accepted: false, text: original,
+                           reasons: [Refusal(kind: .invented, detail: "invented “\(word)”")])
         }
 
         // Deletion is the guard's weak side: it can only police terms it knows
@@ -334,7 +395,8 @@ public enum VocabularyGuard {
         // held to account, since those are the ones worth protecting.
         let result = Set(words(in: candidate).map { $0.lowercased() })
         for term in allowed where source.contains(term) && !result.contains(term) {
-            return Verdict(accepted: false, text: original, reasons: ["dropped “\(term)”"])
+            return Verdict(accepted: false, text: original,
+                           reasons: [Refusal(kind: .dropped, detail: "dropped “\(term)”")])
         }
 
         // Punctuation is policed by count rather than position, so a comma may
@@ -346,10 +408,12 @@ public enum VocabularyGuard {
         let before = punctuation(in: original), after = punctuation(in: candidate)
         if after.total < before.total {
             return Verdict(accepted: false, text: original,
-                           reasons: ["dropped punctuation (\(before.total) → \(after.total))"])
+                           reasons: [Refusal(kind: .punctuation,
+                                             detail: "dropped punctuation (\(before.total) → \(after.total))")])
         }
         if after.questions < before.questions {
-            return Verdict(accepted: false, text: original, reasons: ["dropped a question mark"])
+            return Verdict(accepted: false, text: original,
+                           reasons: [Refusal(kind: .punctuation, detail: "dropped a question mark")])
         }
 
         return Verdict(accepted: true, text: candidate, reasons: [])

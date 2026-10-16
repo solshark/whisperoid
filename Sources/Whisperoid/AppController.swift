@@ -842,15 +842,16 @@ final class AppController {
 
     /// Records what a cleanup pass did.
     ///
-    /// Timing and refusals are always logged: they describe the mechanism
-    /// rather than the content, and a guard firing constantly is something the
-    /// user should be able to discover. The text itself is logged only when
-    /// explicitly enabled, because these entries are public and a dictation
-    /// app's transcripts are not the system log's business by default.
+    /// Timing, and how many corrections of each kind were refused, are always
+    /// logged: they describe the mechanism rather than the content, and a guard
+    /// firing constantly is something the user should be able to discover. Any
+    /// words from the dictation, whether in the text before and after or in a
+    /// refused correction, are logged only when explicitly enabled, because
+    /// these entries are public and a dictation app's transcripts are not the
+    /// system log's business by default.
     private func report(_ result: CleanupResult) {
-        if !result.rejected.isEmpty {
-            Log.info("cleanup[\(result.mode.rawValue)] rejected: \(result.rejected.joined(separator: "; "))")
-        }
+        Refusal.logLines(for: result.rejected, mode: result.mode.rawValue,
+                         includingWords: preferences.logCleanupComparison).forEach(Log.info)
         guard result.changed else { return }
 
         Log.info(String(format: "cleanup[%@] changed in %.2f s",
