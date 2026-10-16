@@ -31,10 +31,11 @@ Xcode installed, along with its Metal toolchain:
 xcodebuild -downloadComponent MetalToolchain
 ```
 
-Then, from a clone of this repository:
+Then, from a clone of this repository, signing with an identity of your own
+(see [Building](#building)):
 
 ```sh
-./scripts/build-app.sh
+WHISPEROID_SIGN_IDENTITY="Apple Development: Your Name (ABCDE12345)" ./scripts/build-app.sh
 open build/Whisperoid.app
 ```
 
@@ -290,16 +291,20 @@ they fail.
 ## Building
 
 ```sh
-./scripts/build-app.sh
+WHISPEROID_SIGN_IDENTITY="Apple Development: Your Name (ABCDE12345)" ./scripts/build-app.sh
 open build/Whisperoid.app
 ```
 
 SwiftPM cannot emit an `.app` bundle, so the script wraps the executable by
-hand. It signs with a real certificate rather than ad-hoc: an ad-hoc signature
-changes on every build, which invalidates the permissions macOS granted to the
-previous build and makes the microphone prompt reappear each time. A Developer
-ID Application certificate is preferred when present; otherwise an Apple
-Development identity is used. Override with `WHISPEROID_SIGN_IDENTITY`.
+hand, then signs it with the identity named in `WHISPEROID_SIGN_IDENTITY`, in
+full, as `security find-identity -v -p codesigning` lists it. The script never
+chooses one itself: a keychain can hold the certificates of more than one team,
+and choosing automatically signs with whichever comes first.
+
+Prefer a real certificate to an ad-hoc signature (`WHISPEROID_SIGN_IDENTITY="-"`):
+an ad-hoc signature changes on every build, which invalidates the permissions
+macOS granted to the previous build and makes the microphone prompt reappear
+each time.
 
 Signing applies the hardened runtime, which notarisation requires, along with
 the `com.apple.security.device.audio-input` entitlement that the hardened
@@ -473,7 +478,7 @@ not indicate a fault.
 ## Distribution
 
 ```sh
-./scripts/package.sh
+WHISPEROID_SIGN_IDENTITY="Developer ID Application: Your Name (ABCDE12345)" ./scripts/package.sh
 ```
 
 Produces `dist/Whisperoid-<version>.dmg` containing the app beside a symlink to
@@ -482,14 +487,19 @@ HFS+ rather than APFS so that older versions of macOS can mount it.
 
 Gatekeeper only accepts an app on another Mac without complaint when it is
 signed with a **Developer ID Application** certificate and notarised. With
-`notarytool` credentials stored in the keychain, the script does both:
+`notarytool` credentials stored in the keychain from an App Store Connect API
+key, the script does both:
 
 ```sh
 xcrun notarytool store-credentials whisperoid \
-    --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
+    --key <path to AuthKey_KEYID.p8> --key-id <key ID> --issuer <issuer ID>
 
+WHISPEROID_SIGN_IDENTITY="Developer ID Application: Your Name (ABCDE12345)" \
 WHISPEROID_NOTARY_PROFILE=whisperoid ./scripts/package.sh
 ```
+
+The disk image is signed with the same identity as the app, under the app's
+bundle ID, with a secure timestamp.
 
 Without that certificate the image still works, but the recipient must clear
 the quarantine flag once after dragging the app across:
