@@ -53,11 +53,17 @@ struct OverlayView: View {
             }
 
         case .recording:
-            Text(Self.timestamp(model.elapsed))
-                .font(.system(size: 23, weight: .light, design: .monospaced))
-                .monospacedDigit()
-                .tracking(3)
-                .foregroundStyle(.white.opacity(0.92))
+            // A device that has gone silent mid-recording says so in place of
+            // the timer, which would otherwise suggest all is well.
+            if model.message.isEmpty {
+                Text(Self.timestamp(model.elapsed))
+                    .font(.system(size: 23, weight: .light, design: .monospaced))
+                    .monospacedDigit()
+                    .tracking(3)
+                    .foregroundStyle(.white.opacity(0.92))
+            } else {
+                warning(model.message)
+            }
 
         case .transcribing:
             Text("TRANSCRIBING")

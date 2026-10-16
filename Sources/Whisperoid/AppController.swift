@@ -638,9 +638,11 @@ final class AppController {
             // three used to arrive as the same unhelpful error.
             var peak: Float = 0
             var sumOfSquares: Float = 0
+            var zeros = 0
             for sample in samples {
                 peak = max(peak, abs(sample))
                 sumOfSquares += sample * sample
+                if sample == 0 { zeros += 1 }
             }
             let rms = (sumOfSquares / Float(max(samples.count, 1))).squareRoot()
             let decibels = { (value: Float) in 20 * log10(max(value, 1e-9)) }
@@ -660,9 +662,13 @@ final class AppController {
             // user's devices was playing to: they refused the Mac their
             // microphone, and reconnecting them did not change that. Nothing
             // downstream can do anything useful with it, and "nothing was
-            // transcribed" sends the user looking at the wrong thing.
-            if peak < Self.silenceFloor, seconds >= Transcriber.minimumSeconds {
-                Log.error(String(format: "audio: %.2f s captured but every sample was silent", seconds))
+            // transcribed" sends the user looking at the wrong thing. The same
+            // goes for a few milliseconds of sound followed by zeros, which is
+            // how AirPods that the Mac did own sent a 43-second dictation:
+            // given that, Whisper returned "Thank you."
+            if AudioRecorder.isSilentInput(samples), seconds >= Transcriber.minimumSeconds {
+                Log.error(String(format: "audio: %.2f s captured but nothing came through: %.1f%% of samples "
+                                 + "were bit-exact silence", seconds, 100 * Double(zeros) / Double(max(samples.count, 1))))
                 fail(Self.silentInputFailure(for: recorder.inputDevice))
                 return
             }
@@ -955,12 +961,6 @@ final class AppController {
 
     // MARK: - Recording tick
 
-    /// Below this peak amplitude a recording is not quiet, it is empty.
-    ///
-    /// -100 dBFS. A muted room still measures around -60 dBFS through a real
-    /// microphone; a device that is handing over zeros measures nothing at all.
-    private static let silenceFloor: Float = 1e-5
-
     /// How long a recording may go without audio before it is given up on.
     ///
     /// Has to clear the pause between starting the engine and the first buffer,
@@ -984,8 +984,12 @@ final class AppController {
     private static let reopenSilentInputSeconds: Double = 3
 
     /// Shown in place of GETTING READY while the device sends only silence.
-    private static func silentInputHint(for device: AudioRecorder.InputDevice?) -> String {
+    private static func silentInputHint(for device: AudioRecorder.InputDevice?, afterSound: Bool) -> String {
         let name = device?.name ?? "the microphone"
+        // The device worked a moment ago, so its settings are not the cause.
+        if afterSound {
+            return "Sound from \(name) has stopped. Reopening it; if this goes on, stop and try again."
+        }
         if device?.isBluetooth == true {
             return "No sound from \(name) yet. If another of your devices is playing to it, "
                 + "pause the audio there and wait a moment."
@@ -1022,25 +1026,37 @@ final class AppController {
                     self.overlay.update(.recording)
                 }
 
-                // Still nothing but zeros, long after a headset would have woken.
-                // Say why rather than leave the user watching GETTING READY, and
-                // keep listening: once the cause is cleared the device produces
-                // sound and the branch above takes over.
-                if self.overlay.model.phase == .warmingUp, self.overlay.model.message.isEmpty,
-                   self.recorder.silentSeconds >= Self.silentInputHintSeconds
+                let silent = self.recorder.silentSeconds
+
+                // Sound again after a silent stretch: the hint has done its job.
+                if self.overlay.model.phase == .recording, !self.overlay.model.message.isEmpty,
+                   silent < Self.silentInputHintSeconds
                 {
+                    self.overlay.model.message = ""
+                }
+
+                // Nothing but zeros, long after a headset would have woken or
+                // a working microphone would have picked up the room. Say why
+                // rather than leave the user talking to a device that is not
+                // listening, and keep listening: once the cause is cleared the
+                // device produces sound and the branches above take over. Not
+                // only at the start: AirPods have produced a moment of sound
+                // and then nothing but zeros for a whole dictation.
+                if self.overlay.model.message.isEmpty, silent >= Self.silentInputHintSeconds {
                     let device = self.recorder.inputDevice
-                    Log.info(String(format: "audio: only silence for %.1f s from %@%@; showing a hint",
-                                    self.recorder.silentSeconds, device?.name ?? "unknown device",
-                                    device?.isBluetooth == true ? " (Bluetooth)" : ""))
-                    self.overlay.model.message = Self.silentInputHint(for: device)
+                    Log.info(String(format: "audio: only silence for %.1f s from %@%@%@; showing a hint",
+                                    silent, device?.name ?? "unknown device",
+                                    device?.isBluetooth == true ? " (Bluetooth)" : "",
+                                    self.recorder.hasHeardAudio ? " after sound" : ""))
+                    self.overlay.model.message = Self.silentInputHint(
+                        for: device, afterSound: self.recorder.hasHeardAudio)
                 }
 
                 // macOS asks a headset for its microphone only when the device is
                 // opened. Reopening it while nothing is heard is what lets this
                 // recording come alive once the other device lets go, rather
                 // than only the next one.
-                if self.overlay.model.phase == .warmingUp, !self.isReopeningInput,
+                if silent >= Self.reopenSilentInputSeconds, !self.isReopeningInput,
                    Date().timeIntervalSince(self.inputOpenedAt) >= Self.reopenSilentInputSeconds
                 {
                     self.reopenSilentInput()

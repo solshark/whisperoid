@@ -342,6 +342,18 @@ is opened, not when the other device stops playing, so while nothing is heard
 the device is reopened every 3 s. A reopen costs about 0.25 s, all of it
 silence.
 
+The same applies at any point in a recording, not only at its start. AirPods
+that the Mac did own have produced a few milliseconds of sound and then nothing
+but zeros for a whole dictation, with macOS reporting the headset link as up.
+A working microphone never does this: across 248 recorded dictations, the
+longest run of bit-exact silence after the first sound was 0.18 s. Two seconds
+of it shows the warning in place of the timer, and from three the device is
+reopened every 3 s; the timer returns when sound does. A recording that ends
+at least 99 % bit-exact silence is reported as silent input rather than
+transcribed, since Whisper invents text from it, most often "Thank you."
+Reopening has not yet been seen to revive AirPods in this state, so the
+warning is what saves the dictation: stop and try again.
+
 `⌘⌃D` is not a macOS symbolic hotkey, but it is AppKit's built-in "Look Up in
 Dictionary" shortcut within text views. A Carbon hotkey takes precedence, so
 that lookup is shadowed while the app is running.
