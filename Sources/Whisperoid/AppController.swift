@@ -103,6 +103,10 @@ final class AppController {
     @ObservationIgnored private var setupWindow: HostedWindowController<SetupView>?
     private var tickTimer: Timer?
     private var silenceDetector: SilenceDetector?
+    /// When the input device was last opened for the current recording, and
+    /// whether it is being reopened right now. See `reopenSilentInputSeconds`.
+    @ObservationIgnored private var inputOpenedAt = Date()
+    @ObservationIgnored private var isReopeningInput = false
     /// Nil only when the support directory cannot be created, in which case
     /// cleanup is unavailable and dictation continues without it.
     private let embeddedCleaner: EmbeddedCleaner?
@@ -556,6 +560,7 @@ final class AppController {
             }
             do {
                 try await recorder.start()
+                inputOpenedAt = Date()
                 recordedSeconds = 0
                 state = .recording
 
@@ -643,16 +648,14 @@ final class AppController {
             // stream at all.
             // Buffers arrived, on time and in the right format, and every
             // sample in them was zero. That is not a quiet room, it is a device
-            // handing over silence — seen when a Bluetooth headset is left in
-            // its music profile while still advertising a microphone. Nothing
+            // handing over silence. Seen with AirPods that another of the
+            // user's devices was playing to: they refused the Mac their
+            // microphone, and reconnecting them did not change that. Nothing
             // downstream can do anything useful with it, and "nothing was
             // transcribed" sends the user looking at the wrong thing.
             if peak < Self.silenceFloor, seconds >= Transcriber.minimumSeconds {
                 Log.error(String(format: "audio: %.2f s captured but every sample was silent", seconds))
-                fail("The input device recorded only silence. If it is a Bluetooth headset, "
-                     + "macOS may have left it in music mode: stop any audio that is playing, "
-                     + "then disconnect and reconnect it, or pick another input in "
-                     + "System Settings > Sound > Input.")
+                fail(Self.silentInputFailure(for: recorder.inputDevice))
                 return
             }
 
@@ -951,6 +954,41 @@ final class AppController {
     /// for a slower device without making a genuinely dead one wait long.
     private static let audioStallSeconds: Double = 3
 
+    /// How long a device may send only bit-exact silence before the overlay
+    /// says so.
+    ///
+    /// AirPods Max woke within 0.8 s in all 36 recordings measured, and wired
+    /// microphones produce sound from the first buffer. Silence well past that
+    /// is a device that is open but not listening.
+    private static let silentInputHintSeconds: Double = 2
+
+    /// How often a device that has sent only silence is reopened.
+    ///
+    /// Each opening has to be given time to wake: AirPods Max took up to 0.8 s,
+    /// and reopening sooner would interrupt a headset that was about to answer.
+    private static let reopenSilentInputSeconds: Double = 3
+
+    /// Shown in place of GETTING READY while the device sends only silence.
+    private static func silentInputHint(for device: AudioRecorder.InputDevice?) -> String {
+        let name = device?.name ?? "the microphone"
+        if device?.isBluetooth == true {
+            return "No sound from \(name) yet. If another of your devices is playing to it, "
+                + "pause the audio there and wait a moment."
+        }
+        return "No sound from \(name) yet. Check that it is not muted and its input volume is up."
+    }
+
+    /// Shown when a recording ends having received only silence.
+    private static func silentInputFailure(for device: AudioRecorder.InputDevice?) -> String {
+        let name = device?.name ?? "the microphone"
+        if device?.isBluetooth == true {
+            return "Only silence came from \(name). If another of your devices is playing to it, "
+                + "pause the audio there and try again."
+        }
+        return "Only silence came from \(name). Check that it is not muted and its input volume "
+            + "is up, then try again."
+    }
+
     private func startTicking() {
         stopTicking()
 
@@ -965,7 +1003,32 @@ final class AppController {
                 // The device has started producing sound, so the recording is
                 // genuinely under way and the user can be invited to speak.
                 if self.overlay.model.phase == .warmingUp, self.recorder.hasHeardAudio {
+                    self.overlay.model.message = ""
                     self.overlay.update(.recording)
+                }
+
+                // Still nothing but zeros, long after a headset would have woken.
+                // Say why rather than leave the user watching GETTING READY, and
+                // keep listening: once the cause is cleared the device produces
+                // sound and the branch above takes over.
+                if self.overlay.model.phase == .warmingUp, self.overlay.model.message.isEmpty,
+                   self.recorder.silentSeconds >= Self.silentInputHintSeconds
+                {
+                    let device = self.recorder.inputDevice
+                    Log.info(String(format: "audio: only silence for %.1f s from %@%@; showing a hint",
+                                    self.recorder.silentSeconds, device?.name ?? "unknown device",
+                                    device?.isBluetooth == true ? " (Bluetooth)" : ""))
+                    self.overlay.model.message = Self.silentInputHint(for: device)
+                }
+
+                // macOS asks a headset for its microphone only when the device is
+                // opened. Reopening it while nothing is heard is what lets this
+                // recording come alive once the other device lets go, rather
+                // than only the next one.
+                if self.overlay.model.phase == .warmingUp, !self.isReopeningInput,
+                   Date().timeIntervalSince(self.inputOpenedAt) >= Self.reopenSilentInputSeconds
+                {
+                    self.reopenSilentInput()
                 }
 
                 if self.recordedSeconds >= Self.maximumRecordingSeconds {
@@ -987,6 +1050,25 @@ final class AppController {
         // Common mode keeps the waveform animating while a menu is open.
         RunLoop.main.add(timer, forMode: .common)
         tickTimer = timer
+    }
+
+    /// Reopens an input device that has sent only silence, so that macOS asks
+    /// it for its microphone again.
+    private func reopenSilentInput() {
+        isReopeningInput = true
+        Log.info("audio: reopening \(recorder.inputDevice?.name ?? "the input device") "
+                 + "to ask for its microphone again")
+        Task {
+            defer {
+                isReopeningInput = false
+                inputOpenedAt = Date()
+            }
+            do {
+                try await recorder.restartCapture()
+            } catch {
+                Log.error("audio: reopening the input device failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func stopTicking() {

@@ -303,6 +303,18 @@ Default shortcut is `⌘⌃D` to start and stop. `Escape` discards a recording
 without transcribing, and is only registered while recording. Recording stops
 automatically after 300 s; anything under 0.3 s is ignored.
 
+Until the microphone produces sound the overlay reads GETTING READY: a
+Bluetooth headset sends bit-exact silence while it switches into its headset
+profile, which took AirPods Max up to 0.8 s. If a device sends nothing but
+silence for 2 s, the overlay says so, and the recording carries on, switching
+to the timer if sound starts. AirPods that another of the user's devices is
+playing to refuse the Mac their microphone, and reconnecting them does not
+change that; `audiomxd` logs the refusal as `DontRoute … Remote Category 201 >
+Local Category 200`. macOS asks for the microphone again only when the device
+is opened, not when the other device stops playing, so while nothing is heard
+the device is reopened every 3 s. A reopen costs about 0.25 s, all of it
+silence.
+
 `⌘⌃D` is not a macOS symbolic hotkey, but it is AppKit's built-in "Look Up in
 Dictionary" shortcut within text views. A Carbon hotkey takes precedence, so
 that lookup is shadowed while the app is running.

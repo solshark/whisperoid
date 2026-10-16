@@ -43,10 +43,14 @@ struct OverlayView: View {
     private var caption: some View {
         switch model.phase {
         case .warmingUp:
-            Text("GETTING READY")
-                .font(.system(size: 15, weight: .light, design: .monospaced))
-                .tracking(4)
-                .foregroundStyle(.white.opacity(0.88))
+            if model.message.isEmpty {
+                Text("GETTING READY")
+                    .font(.system(size: 15, weight: .light, design: .monospaced))
+                    .tracking(4)
+                    .foregroundStyle(.white.opacity(0.88))
+            } else {
+                warning(model.message)
+            }
 
         case .recording:
             Text(Self.timestamp(model.elapsed))
@@ -75,13 +79,19 @@ struct OverlayView: View {
                 .foregroundStyle(.white.opacity(0.92))
 
         case .failed:
-            Text(model.message)
-                .font(.system(size: 13, weight: .light, design: .monospaced))
-                .foregroundStyle(.orange.opacity(0.95))
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
-                .padding(.horizontal, 40)
+            warning(model.message)
         }
+    }
+
+    /// A failure, or a device that is open but not listening. Three lines is
+    /// what the panel holds legibly.
+    private func warning(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13, weight: .light, design: .monospaced))
+            .foregroundStyle(.orange.opacity(0.95))
+            .multilineTextAlignment(.center)
+            .lineLimit(3)
+            .padding(.horizontal, 40)
     }
 
     private var doneSummary: String {

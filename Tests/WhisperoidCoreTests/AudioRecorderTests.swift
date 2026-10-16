@@ -179,6 +179,73 @@ struct AudioRecorderTests {
         #expect(recorder.recordedSeconds > 0.9, "audio was discarded after the device was awake")
     }
 
+    /// What the overlay waits on before saying the device is not listening.
+    /// AirPods that another device is playing to send zeros for as long as the
+    /// recording runs.
+    @Test("Silence is timed until the device produces sound")
+    func silenceIsTimedUntilAwake() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 2.5, amplitude: 0)
+        #expect(abs(recorder.silentSeconds - 2.5) < 0.1, "silent for \(recorder.silentSeconds) s")
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+        #expect(recorder.silentSeconds == 0, "the device woke but still counts as silent")
+    }
+
+    /// The negative control. Silence after the device has woken is a pause or a
+    /// dropout, not a device that never started, and must not raise the hint
+    /// in the middle of a dictation.
+    @Test("Silence after the device has woken is not counted")
+    func silenceAfterWakingIsNotCounted() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 2.5, amplitude: 0)
+
+        #expect(recorder.silentSeconds == 0)
+    }
+
+    /// A reopen is scheduled from a timer and can arrive after the user has
+    /// stopped. Opening the device then would switch the microphone back on
+    /// with nobody recording. `inputDevice` is set only when a device is
+    /// actually opened, so it staying nil is what proves nothing was.
+    @Test("A reopen after the recording has stopped leaves the microphone closed")
+    func reopenAfterStopDoesNothing() async throws {
+        let recorder = AudioRecorder()
+
+        try await recorder.restartCapture()
+
+        #expect(recorder.inputDevice == nil)
+    }
+
+    /// Reopening costs about a quarter of a second of audio, which is free
+    /// while the device sends only zeros and is speech once it has woken.
+    @Test("A device that has produced sound is not reopened")
+    func reopenAfterSoundDoesNothing() async throws {
+        let recorder = AudioRecorder()
+        recorder.setRunningForTesting(true)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+
+        try await recorder.restartCapture()
+
+        #expect(recorder.inputDevice == nil)
+        #expect(recorder.recordedSeconds > 0.15, "audio captured before the reopen was lost")
+    }
+
+    /// Spelled out as four-character codes rather than CoreAudio's constants,
+    /// so the test does not simply restate the implementation.
+    @Test("Bluetooth Classic and LE devices are recognised, others are not")
+    func recognisesBluetooth() {
+        func code(_ text: String) -> Int32 {
+            Int32(bitPattern: text.utf8.reduce(0) { $0 << 8 | UInt32($1) })
+        }
+        #expect(AudioRecorder.isBluetooth(transportType: code("blue")))
+        #expect(AudioRecorder.isBluetooth(transportType: code("blea")))
+        #expect(!AudioRecorder.isBluetooth(transportType: code("usb ")))
+        #expect(!AudioRecorder.isBluetooth(transportType: code("bltn")))
+    }
+
     @Test("Silence produces a level of zero and speech does not")
     func levelsTrackAmplitude() {
         let quiet = AudioRecorder()
