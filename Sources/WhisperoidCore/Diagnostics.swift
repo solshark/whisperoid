@@ -63,8 +63,8 @@ public enum Diagnostics {
             let total = directorySize(at: modelFolder)
             lines.append("total:    \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))")
             lines.append("expected: about 1.6 GB complete, of which AudioEncoder.mlmodelc")
-            lines.append("          alone is about 1.3 GB. Download progress is counted in")
-            lines.append("          files, so it appears frozen for the whole of that one.")
+            lines.append("          alone is about 1.3 GB. Progress counts bytes, or files if the size")
+            lines.append("          lookup failed, and then appears frozen while that one downloads.")
         } else {
             lines.append("contents: folder does not exist yet")
         }
