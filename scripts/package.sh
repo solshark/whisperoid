@@ -107,6 +107,10 @@ echo
 
 if [[ "$SIGNED_BY" == Developer\ ID* && -n "${WHISPEROID_NOTARY_PROFILE:-}" ]]; then
 	echo "Notarised. The recipient can open the image and drag the app across."
+elif [[ "$SIGNED_BY" == Developer\ ID* ]]; then
+	echo "Signed with Developer ID, not yet notarised. Notarise and staple it before"
+	echo "distributing it: re-run with WHISPEROID_NOTARY_PROFILE set, or, for Black"
+	echo "Meridian's releases, let the release_dmg lane do it, which it does next."
 else
 	echo "NOT notarised. Gatekeeper will refuse to open this on another Mac."
 	echo "After dragging the app to Applications, the recipient runs once:"
