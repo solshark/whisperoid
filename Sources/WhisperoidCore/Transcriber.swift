@@ -57,6 +57,9 @@ public final class Transcriber: @unchecked Sendable {
         public var inputGainDecibels: Float = 0
         public var pauseThresholdDecibels: Float = 0
         public var chunks: Int = 1
+        /// Segments left out because nothing was heard while they were
+        /// supposedly spoken. See `isHeard(_:in:pauseThreshold:)`.
+        public var unheardSegments: Int = 0
     }
 
     public enum TranscriberError: LocalizedError {
@@ -276,6 +279,21 @@ public final class Transcriber: @unchecked Sendable {
     ///
     /// Recordings within one window are not chunked, so this changes nothing
     /// for short dictation.
+    ///
+    /// Each piece is decoded with timestamps and without WhisperKit's
+    /// first-token check. Both were measured on 2026-10-15 by replaying an
+    /// 84-second dictation whose last 17 seconds were lost. That piece began
+    /// mid-sentence, after a pause the speaker filled with "uh":
+    ///
+    /// - The first-token check abandons a decode whose first token is
+    ///   unlikely, before keeping any of it, and retries at a higher
+    ///   temperature. Following the glossary prompt, a piece starting
+    ///   mid-sentence failed the check at every temperature in 6 of 12 runs
+    ///   and came back empty. No other fallback reason can return nothing.
+    /// - Without timestamps, a piece the model stops decoding early is not
+    ///   resumed. With the check off but timestamps still off, the same piece
+    ///   lost its first sentence in every run; with timestamps it came back
+    ///   whole, at temperature 0, in every run.
     static func decodingOptions() -> DecodingOptions {
         DecodingOptions(
             verbose: false,
@@ -284,7 +302,8 @@ public final class Transcriber: @unchecked Sendable {
             temperature: 0.0,
             detectLanguage: true,
             skipSpecialTokens: true,
-            withoutTimestamps: true,
+            withoutTimestamps: false,
+            firstTokenLogProbThreshold: nil,
             chunkingStrategy: .vad
         )
     }
@@ -315,20 +334,67 @@ public final class Transcriber: @unchecked Sendable {
         let results = try await pipe.transcribe(audioArray: levelled.samples, decodeOptions: options)
         let elapsed = Date().timeIntervalSince(started)
 
-        let text = results
-            .map(\.text)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let heard = Self.heardText(of: results, in: levelled.samples, pauseThreshold: threshold)
 
         return Output(
-            text: text,
+            text: heard.text,
             language: results.first?.language ?? "??",
             duration: elapsed,
             promptTokens: options.promptTokens?.count ?? 0,
             inputGainDecibels: levelled.gainDecibels,
             pauseThresholdDecibels: 20 * log10(threshold),
-            chunks: results.count
+            chunks: results.count,
+            unheardSegments: heard.unheardSegments
         )
+    }
+
+    // MARK: - Text from silence
+
+    /// Joins the pieces of a recording into one text, leaving out segments
+    /// that were not heard.
+    ///
+    /// A piece with nothing left out keeps WhisperKit's own text unchanged.
+    static func heardText(
+        of results: [TranscriptionResult],
+        in samples: [Float],
+        pauseThreshold: Float
+    ) -> (text: String, unheardSegments: Int) {
+        var unheard = 0
+        let texts = results.map { result in
+            let heard = result.segments.filter { isHeard($0, in: samples, pauseThreshold: pauseThreshold) }
+            guard heard.count < result.segments.count else { return result.text }
+            unheard += result.segments.count - heard.count
+            return heard.map(\.text).joined().trimmingCharacters(in: .whitespaces)
+        }
+        let text = texts
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text, unheard)
+    }
+
+    /// Whether anything was audible while a segment was supposedly spoken.
+    ///
+    /// Whisper invents short phrases, most often "Thank you.", when it decodes
+    /// audio with no speech in it. Decoding with timestamps exposes this at the
+    /// end of a recording: after the last words, WhisperKit decodes the
+    /// remaining second or two of silence as a window of its own. Each
+    /// segment carries the time it covers, and a segment during which no
+    /// 100 ms frame reached the recording's pause threshold had nothing in it
+    /// to transcribe. Measured on 2026-10-15 across 128 segments from 66 real
+    /// recordings: the invented ones sat 5 dB and more below the threshold,
+    /// the quietest real speech 10 dB above it.
+    ///
+    /// At least one frame is measured, so a segment whose timestamps collapsed
+    /// to an instant is judged by the sound at that instant rather than
+    /// discarded unexamined.
+    static func isHeard(_ segment: TranscriptionSegment, in samples: [Float], pauseThreshold: Float) -> Bool {
+        let rate = Float(AudioRecorder.targetSampleRate)
+        let first = max(0, Int(segment.start * rate))
+        guard first < samples.count else { return false }
+        let end = Int((segment.end * rate).rounded(.up))
+        let last = min(samples.count, max(end, first + levelFrameSamples))
+        let loudest = frameLevels(Array(samples[first..<last])).map(\.rms).max() ?? 0
+        return loudest >= pauseThreshold
     }
 
     // MARK: - Input level

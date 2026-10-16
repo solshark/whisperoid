@@ -9,6 +9,7 @@ import WhisperKit
 ///     replaycheck --clips a.wav,b.wav [--pause 1.5] [--reference ref.txt]
 ///                 [--glossary terms.txt] [--gains -16,0,24 | --levels -45,-33]
 ///                 [--variants app,default-vad] [--repeat 1] [--dump app@0]
+///                 [--log-fallbacks]
 ///
 /// Clips must be 16 kHz mono. They are joined with pauses of room noise
 /// matched to the quietest stretch of the first clip, so a long dictation can
@@ -22,8 +23,14 @@ import WhisperKit
 ///   fixed pause threshold.
 ///
 /// Either can carry modifiers, joined with `+`: `no-prompt` (no glossary
-/// prompt), `no-skip` (no skipping of windows judged silent), `timestamps`
-/// (decode with timestamps), `fixed` (fixed 30-second windows, no chunking).
+/// prompt), `no-skip` (no skipping of windows judged silent), `fixed` (fixed
+/// 30-second windows, no chunking), `no-timestamps` (decode without
+/// timestamps), `first-token` (WhisperKit's first-token log-probability
+/// check) and `no-gate` (keep segments during which nothing was heard).
+/// `app+no-timestamps+first-token+no-gate` transcribes as 0.7.1 did.
+///
+/// `--log-fallbacks` prints WhisperKit's own log at info level, which names
+/// the reason for each temperature fallback.
 @main
 struct ReplayCheck {
 
@@ -45,6 +52,7 @@ struct ReplayCheck {
         let variants = args.list("--variants").nilIfEmpty ?? ["app"]
         let repeats = Int(args.value("--repeat") ?? "1") ?? 1
         let dump = Set(args.list("--dump"))
+        let logFallbacks = args.flag("--log-fallbacks")
 
         let audio = compose(clips, pause: pause)
         let audioLevel = decibels(rms(audio))
@@ -56,12 +64,17 @@ struct ReplayCheck {
             model: Transcriber.modelVariant,
             modelFolder: Transcriber.modelFolder(in: storage).path,
             tokenizerFolder: storage,
-            verbose: false,
-            logLevel: .error,
+            verbose: logFallbacks,
+            logLevel: logFallbacks ? .info : .error,
             prewarm: false,
             load: true,
             download: false
         ))
+        if logFallbacks {
+            Logging.shared.loggingCallback = { message in
+                if message.contains("Fallback") { print("  whisperkit: \(message)") }
+            }
+        }
 
         let steps = levels.isEmpty ? gains : levels.map { $0 - audioLevel }
         print("variant              gain  recall  chars  chunks  empty  input dBFS  seconds")
@@ -79,12 +92,15 @@ struct ReplayCheck {
                             energyThreshold: Transcriber.pauseThreshold(for: input)
                         )
                     }
+                    let pauseLevel = decibels(Transcriber.pauseThreshold(for: input))
 
                     var options = Transcriber.decodingOptions()
-                    if variant.contains("no-skip") { options.noSpeechThreshold = nil }
-                    if variant.contains("timestamps") { options.withoutTimestamps = false }
-                    if variant.contains("fixed") { options.chunkingStrategy = ChunkingStrategy.none }
-                    if !variant.contains("no-prompt"), let prompt = Transcriber.prompt(for: glossary),
+                    let modifiers = Set(variant.split(separator: "+").map(String.init))
+                    if modifiers.contains("no-skip") { options.noSpeechThreshold = nil }
+                    if modifiers.contains("fixed") { options.chunkingStrategy = ChunkingStrategy.none }
+                    if modifiers.contains("no-timestamps") { options.withoutTimestamps = true }
+                    if modifiers.contains("first-token") { options.firstTokenLogProbThreshold = -1.5 }
+                    if !modifiers.contains("no-prompt"), let prompt = Transcriber.prompt(for: glossary),
                        let tokenizer = pipe.tokenizer
                     {
                         let tokens = tokenizer.encode(text: " " + prompt)
@@ -96,9 +112,13 @@ struct ReplayCheck {
                     let results = try await pipe.transcribe(audioArray: input, decodeOptions: options)
                     let seconds = Date().timeIntervalSince(started)
 
-                    // Joined exactly as Transcriber.transcribe joins them.
-                    let text = results.map(\.text).joined(separator: " ")
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    // Joined exactly as Transcriber.transcribe joins them,
+                    // unless the variant predates leaving out unheard segments.
+                    let gated = !variant.hasPrefix("default-vad") && !modifiers.contains("no-gate")
+                    let pauseThreshold = Transcriber.pauseThreshold(for: input)
+                    let text = gated
+                        ? Transcriber.heardText(of: results, in: input, pauseThreshold: pauseThreshold).text
+                        : results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
                     let empty = results.filter {
                         $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     }.count
@@ -110,12 +130,16 @@ struct ReplayCheck {
                                  results.count, empty, decibels(rms(input)), seconds))
 
                     if dump.contains("\(variant)@\(Int(gain))") {
+                        print(String(format: "  pause threshold %.1f dBFS; loud = loudest 100 ms in the segment", pauseLevel))
                         for (index, result) in results.enumerated() {
                             print("  chunk \(index): \(result.text.count) chars, lang \(result.language)")
                             for segment in result.segments {
-                                print(String(format: "    %6.2f-%6.2f nospeech %.2f logprob %.2f temp %.1f  %@",
-                                             segment.start, segment.end, segment.noSpeechProb,
+                                let loud = decibels(loudest(input, from: segment.start, to: segment.end))
+                                let heard = Transcriber.isHeard(segment, in: input, pauseThreshold: pauseThreshold)
+                                print(String(format: "    %6.2f-%6.2f loud %+6.1f nospeech %.2f logprob %.2f temp %.1f %@ %@",
+                                             segment.start, segment.end, loud - pauseLevel, segment.noSpeechProb,
                                              segment.avgLogprob, segment.temperature,
+                                             (heard ? "        " : "UNHEARD ") as NSString,
                                              String(segment.text.prefix(70)) as NSString))
                             }
                         }
@@ -127,6 +151,13 @@ struct ReplayCheck {
     }
 
     // MARK: - Audio
+
+    /// The RMS of the loudest 100 ms frame between two times, in seconds.
+    static func loudest(_ samples: [Float], from start: Float, to end: Float) -> Float {
+        let first = max(0, min(samples.count, Int(start * 16000)))
+        let last = max(first, min(samples.count, Int(end * 16000)))
+        return Transcriber.frameLevels(Array(samples[first..<last])).map(\.rms).max() ?? 0
+    }
 
     static func loadClip(_ path: String) throws -> [Float] {
         try RecordingArchive.loadAudio(from: URL(fileURLWithPath: path))
@@ -223,6 +254,9 @@ struct Arguments {
     }
     func list(_ name: String) -> [String] {
         value(name)?.split(separator: ",").map(String.init) ?? []
+    }
+    func flag(_ name: String) -> Bool {
+        values.contains(name)
     }
 }
 

@@ -151,6 +151,20 @@ swift build --product replaycheck
 Clips must be 16 kHz mono; they are joined with pauses of matched room noise to
 build a long recording from short ones.
 
+Even cut at a pause, a piece can begin mid-sentence where the speaker paused
+inside one. Each piece is decoded with timestamps, so a piece the model stops
+early is resumed where it stopped, and without WhisperKit's first-token check,
+which abandons a decode whose first word is unlikely and, if that happens at
+every temperature, returns the piece empty. An 84-second dictation lost its
+last 17 seconds that way; replayed, that piece came back empty in 6 of 12 runs
+before the change and whole in every run after it.
+
+Timestamps also make Whisper's habit of inventing "Thank you." from silence
+visible, typically in the second or two after the last words. A segment during
+which no 100 ms frame reached the pause threshold is left out. Across 128
+segments from 66 real recordings this removed only invented text: the quietest
+real speech was 10 dB above the threshold.
+
 ## Transcript cleanup
 
 Speech to text produces run-together words, missing punctuation and mangled

@@ -694,6 +694,10 @@ final class AppController {
                                 output.text.count, output.language, output.duration,
                                 output.promptTokens, output.chunks, output.inputGainDecibels,
                                 output.pauseThresholdDecibels))
+                if output.unheardSegments > 0 {
+                    Log.info("transcription: left out \(output.unheardSegments) segment(s) "
+                             + "with no sound above the pause threshold")
+                }
 
                 let cleaned = await cleanup(output)
 
