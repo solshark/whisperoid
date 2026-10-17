@@ -24,7 +24,9 @@ remember.
 
 ## Getting started
 
-There is no prebuilt download yet, so the app is built from source. This needs
+No prebuilt builds of Whisperoid are published on GitHub, and none are
+planned. The ready-to-use app is coming to the Mac App Store. Building from
+source gives the full app, free, under the [MIT licence](#licence). This needs
 Xcode installed, along with its Metal toolchain:
 
 ```sh
