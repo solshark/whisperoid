@@ -9,7 +9,7 @@
 #   verify       checks a signed product: path:<app or disk image>
 #   import_cert  imports a certificate made in the developer portal into match; asks first
 
-import_from_git(url: "https://github.com/solshark/blackmeridian-fastlane.git", version: "0.2.0",
+import_from_git(url: "https://github.com/solshark/blackmeridian-fastlane.git", version: "0.3.0",
                 dependencies: ["lib/blackmeridian/signing.rb"])
 
 blackmeridian_project(
