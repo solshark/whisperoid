@@ -33,10 +33,11 @@ Xcode installed, along with its Metal toolchain:
 xcodebuild -downloadComponent MetalToolchain
 ```
 
-Then, from a clone of this repository:
+Then, from a clone of this repository, signing with an identity of your own
+(see [Building](#building)):
 
 ```sh
-./scripts/build-app.sh
+WHISPEROID_SIGN_IDENTITY="Apple Development: Your Name (ABCDE12345)" ./scripts/build-app.sh
 open build/Whisperoid.app
 ```
 
@@ -54,6 +55,14 @@ paste with `⌘V`.
 
 To keep it, drag `build/Whisperoid.app` to `/Applications`, or run
 `./scripts/package.sh` to produce a disk image.
+
+Whisperoid's bundle ID changed from `com.solshark.whisperoid` to
+`online.blackmeridian.whisperoid` when its signing moved to Black Meridian's
+team. macOS treats the renamed app as a new application: the setup window asks
+for microphone access again, and Launch at Login has to be switched on again in
+Settings. Every other setting is imported from the old bundle ID on the first
+launch. The old entries can be removed from System Settings > Privacy & Security
+> Microphone and from General > Login Items.
 
 ## Licence
 
@@ -120,6 +129,52 @@ Measured on an M3 Max, warm, second run:
 Full large-v3 is roughly four times slower, produced identical English text, and
 misdetected Russian as Romanian badly enough to transcribe it *as* Romanian.
 Warm model load is about 5.6 s; resident memory is about 0.8 GB.
+
+### Long recordings
+
+Whisper decodes 30-second windows, so a longer recording is split into pieces,
+and where it is cut decides whether words survive: a piece that starts
+mid-sentence decodes badly, and can come back empty. Recordings are cut at
+pauses, and two adjustments make the pauses findable whatever the microphone:
+
+- **Levelling.** The recording is scaled so its loud speech peaks at -3 dBFS,
+  by at most +30 dB.
+- **A pause threshold per recording.** WhisperKit's default treats any 100 ms
+  frame below a fixed -34 dBFS as silence. A webcam microphone never reaches
+  that level, so the whole recording reads as silence and gets cut every
+  22.5 s, through words; a hot headset never drops below it, so no pause is
+  found and the cut falls at the 30-second limit. The threshold is instead
+  placed halfway, in decibels, between the recording's own pauses and its own
+  speech.
+
+Replaying real English, Russian and mixed dictation at levels from -65 to
+-15 dBFS, word recall went from anywhere between 0.33 and 1.00, varying from
+one run to the next, to 1.00 at every level. Recordings that the fixed
+threshold had forced into repeated decoding were also transcribed in less than
+half the time. `replaycheck` repeats the measurement:
+
+```sh
+swift build --product replaycheck
+.build/out/Products/Debug/replaycheck --clips a.wav,b.wav --reference ref.txt \
+    --gains -16,0,24 --variants app,default-vad
+```
+
+Clips must be 16 kHz mono; they are joined with pauses of matched room noise to
+build a long recording from short ones.
+
+Even cut at a pause, a piece can begin mid-sentence where the speaker paused
+inside one. Each piece is decoded with timestamps, so a piece the model stops
+early is resumed where it stopped, and without WhisperKit's first-token check,
+which abandons a decode whose first word is unlikely and, if that happens at
+every temperature, returns the piece empty. An 84-second dictation lost its
+last 17 seconds that way; replayed, that piece came back empty in 6 of 12 runs
+before the change and whole in every run after it.
+
+Timestamps also make Whisper's habit of inventing "Thank you." from silence
+visible, typically in the second or two after the last words. A segment during
+which no 100 ms frame reached the pause threshold is left out. Across 128
+segments from 66 real recordings this removed only invented text: the quietest
+real speech was 10 dB above the threshold.
 
 ## Transcript cleanup
 
@@ -232,6 +287,7 @@ Sources/
   WhisperoidCore/     Audio capture, transcription, model download, silence detection, cleanup
   Whisperoid/         Menu bar app, setup window, hotkeys, overlay, preferences
   vadcheck/           Development tool for tuning auto-stop against a recording
+  replaycheck/        Development tool for measuring word recall on long recordings
   cleanupcheck/       Development tool for scoring the cleanup model
 Tests/                Swift Testing suites; run with `swift test`
 Resources/            Bundle configuration and entitlements
@@ -245,16 +301,20 @@ they fail.
 ## Building
 
 ```sh
-./scripts/build-app.sh
+WHISPEROID_SIGN_IDENTITY="Apple Development: Your Name (ABCDE12345)" ./scripts/build-app.sh
 open build/Whisperoid.app
 ```
 
 SwiftPM cannot emit an `.app` bundle, so the script wraps the executable by
-hand. It signs with a real certificate rather than ad-hoc: an ad-hoc signature
-changes on every build, which invalidates the permissions macOS granted to the
-previous build and makes the microphone prompt reappear each time. A Developer
-ID Application certificate is preferred when present; otherwise an Apple
-Development identity is used. Override with `WHISPEROID_SIGN_IDENTITY`.
+hand, then signs it with the identity named in `WHISPEROID_SIGN_IDENTITY`, in
+full, as `security find-identity -v -p codesigning` lists it. The script never
+chooses one itself: a keychain can hold the certificates of more than one team,
+and choosing automatically signs with whichever comes first.
+
+Prefer a real certificate to an ad-hoc signature (`WHISPEROID_SIGN_IDENTITY="-"`):
+an ad-hoc signature changes on every build, which invalidates the permissions
+macOS granted to the previous build and makes the microphone prompt reappear
+each time.
 
 Signing applies the hardened runtime, which notarisation requires, along with
 the `com.apple.security.device.audio-input` entitlement that the hardened
@@ -271,6 +331,30 @@ setup window, into `~/Library/Application Support/Whisperoid`.
 Default shortcut is `⌘⌃D` to start and stop. `Escape` discards a recording
 without transcribing, and is only registered while recording. Recording stops
 automatically after 300 s; anything under 0.3 s is ignored.
+
+Until the microphone produces sound the overlay reads GETTING READY: a
+Bluetooth headset sends bit-exact silence while it switches into its headset
+profile, which took AirPods Max up to 0.8 s. If a device sends nothing but
+silence for 2 s, the overlay says so, and the recording carries on, switching
+to the timer if sound starts. AirPods that another of the user's devices is
+playing to refuse the Mac their microphone, and reconnecting them does not
+change that; `audiomxd` logs the refusal as `DontRoute … Remote Category 201 >
+Local Category 200`. macOS asks for the microphone again only when the device
+is opened, not when the other device stops playing, so while nothing is heard
+the device is reopened every 3 s. A reopen costs about 0.25 s, all of it
+silence.
+
+The same applies at any point in a recording, not only at its start. AirPods
+that the Mac did own have produced a few milliseconds of sound and then nothing
+but zeros for a whole dictation, with macOS reporting the headset link as up.
+A working microphone never does this: across 248 recorded dictations, the
+longest run of bit-exact silence after the first sound was 0.18 s. Two seconds
+of it shows the warning in place of the timer, and from three the device is
+reopened every 3 s; the timer returns when sound does. A recording that ends
+at least 99 % bit-exact silence is reported as silent input rather than
+transcribed, since Whisper invents text from it, most often "Thank you."
+Reopening has not yet been seen to revive AirPods in this state, so the
+warning is what saves the dictation: stop and try again.
 
 `⌘⌃D` is not a macOS symbolic hotkey, but it is AppKit's built-in "Look Up in
 Dictionary" shortcut within text views. A Carbon hotkey takes precedence, so
@@ -322,7 +406,8 @@ creating its support directory for the model cache.
 - Transcript history is text only, held in memory, capped at ten entries, and
   discarded when the app quits. It is not written to `UserDefaults` or disk.
 - Nothing transcribed is logged. Log entries carry the model name, storage
-  path, load timing and window geometry only.
+  path, timings, window geometry, audio levels and character counts: numbers
+  describing a recording, never its words.
 
 The transcript is placed on the clipboard by design. A clipboard manager will
 therefore archive it to disk, outside this app's control, which is worth
@@ -335,9 +420,17 @@ LaunchServices has no terminal attached, so stderr is discarded exactly when it
 would be most useful.
 
 ```sh
-/usr/bin/log stream --predicate 'subsystem == "com.solshark.whisperoid"'
-/usr/bin/log show --predicate 'subsystem == "com.solshark.whisperoid"' --last 5m --style compact
+/usr/bin/log stream --predicate 'subsystem == "online.blackmeridian.whisperoid"'
+/usr/bin/log show --predicate 'subsystem == "online.blackmeridian.whisperoid"' --last 5m --style compact
 ```
+
+To debug lost words, `WHISPEROID_KEEP_RECORDINGS=1 ./scripts/build-app.sh`
+builds a variant that keeps every recording as a 32-bit float WAV, with its
+transcript beside it, in `~/Library/Application Support/Whisperoid/recordings`,
+named by the time the recording stopped. `replaycheck --clips` replays one
+exactly. Its version reads `-recordings` in About. It writes audio to disk,
+which a normal build never does, so it is for the developer's own machine and
+must not be distributed.
 
 Use the absolute path. `log` is shadowed in some shells, and the resulting
 error is easy to mistake for an empty result. Messages are emitted at `notice`
@@ -407,7 +500,7 @@ not indicate a fault.
 ## Distribution
 
 ```sh
-./scripts/package.sh
+WHISPEROID_SIGN_IDENTITY="Developer ID Application: Your Name (ABCDE12345)" ./scripts/package.sh
 ```
 
 Produces `dist/Whisperoid-<version>.dmg` containing the app beside a symlink to
@@ -416,14 +509,25 @@ HFS+ rather than APFS so that older versions of macOS can mount it.
 
 Gatekeeper only accepts an app on another Mac without complaint when it is
 signed with a **Developer ID Application** certificate and notarised. With
-`notarytool` credentials stored in the keychain, the script does both:
+`notarytool` credentials stored in the keychain from an App Store Connect API
+key, the script does both:
 
 ```sh
 xcrun notarytool store-credentials whisperoid \
-    --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
+    --key <path to AuthKey_KEYID.p8> --key-id <key ID> --issuer <issuer ID>
 
+WHISPEROID_SIGN_IDENTITY="Developer ID Application: Your Name (ABCDE12345)" \
 WHISPEROID_NOTARY_PROFILE=whisperoid ./scripts/package.sh
 ```
+
+The disk image is signed with the same identity as the app, under the app's
+bundle ID, with a secure timestamp.
+
+Black Meridian makes its own disk images with `bundle exec fastlane release_dmg`,
+which signs with the studio's Developer ID, notarises, staples, and checks the
+result with Gatekeeper. These images are not published. The lane relies on the
+studio's private signing lanes and certificates, so it works only on the
+studio's machines.
 
 Without that certificate the image still works, but the recipient must clear
 the quarantine flag once after dragging the app across:

@@ -103,6 +103,10 @@ final class AppController {
     @ObservationIgnored private var setupWindow: HostedWindowController<SetupView>?
     private var tickTimer: Timer?
     private var silenceDetector: SilenceDetector?
+    /// When the input device was last opened for the current recording, and
+    /// whether it is being reopened right now. See `reopenSilentInputSeconds`.
+    @ObservationIgnored private var inputOpenedAt = Date()
+    @ObservationIgnored private var isReopeningInput = false
     /// Nil only when the support directory cannot be created, in which case
     /// cleanup is unavailable and dictation continues without it.
     private let embeddedCleaner: EmbeddedCleaner?
@@ -273,6 +277,9 @@ final class AppController {
             let directory = try Paths.ensureSupportDirectory()
             let cached = Transcriber.localModel(in: directory) != nil
             Log.info("startup: variant=\(Transcriber.modelVariant) storage=\(directory.path)")
+            #if KEEP_RECORDINGS
+            Log.info("startup: debug build, keeping every recording in \(RecordingArchive.directory.path)")
+            #endif
             Log.info("startup: model folder \(Transcriber.modelFolder(in: directory).path)")
             Log.info(cached
                 ? "startup: model already on disk, skipping network"
@@ -556,6 +563,7 @@ final class AppController {
             }
             do {
                 try await recorder.start()
+                inputOpenedAt = Date()
                 recordedSeconds = 0
                 state = .recording
 
@@ -619,15 +627,22 @@ final class AppController {
             let samples = await recorder.stop()
             let seconds = Double(samples.count) / AudioRecorder.targetSampleRate
 
+            #if KEEP_RECORDINGS
+            let archiveName = RecordingArchive.baseName(for: Date())
+            keep { try RecordingArchive.saveAudio(samples, named: archiveName) }
+            #endif
+
             // The two numbers that separate "the microphone gave us nothing"
             // from "the transcriber did nothing with it", and both of those
             // from "the microphone was open but heard almost nothing". All
             // three used to arrive as the same unhelpful error.
             var peak: Float = 0
             var sumOfSquares: Float = 0
+            var zeros = 0
             for sample in samples {
                 peak = max(peak, abs(sample))
                 sumOfSquares += sample * sample
+                if sample == 0 { zeros += 1 }
             }
             let rms = (sumOfSquares / Float(max(samples.count, 1))).squareRoot()
             let decibels = { (value: Float) in 20 * log10(max(value, 1e-9)) }
@@ -643,16 +658,18 @@ final class AppController {
             // stream at all.
             // Buffers arrived, on time and in the right format, and every
             // sample in them was zero. That is not a quiet room, it is a device
-            // handing over silence — seen when a Bluetooth headset is left in
-            // its music profile while still advertising a microphone. Nothing
+            // handing over silence. Seen with AirPods that another of the
+            // user's devices was playing to: they refused the Mac their
+            // microphone, and reconnecting them did not change that. Nothing
             // downstream can do anything useful with it, and "nothing was
-            // transcribed" sends the user looking at the wrong thing.
-            if peak < Self.silenceFloor, seconds >= Transcriber.minimumSeconds {
-                Log.error(String(format: "audio: %.2f s captured but every sample was silent", seconds))
-                fail("The input device recorded only silence. If it is a Bluetooth headset, "
-                     + "macOS may have left it in music mode: stop any audio that is playing, "
-                     + "then disconnect and reconnect it, or pick another input in "
-                     + "System Settings > Sound > Input.")
+            // transcribed" sends the user looking at the wrong thing. The same
+            // goes for a few milliseconds of sound followed by zeros, which is
+            // how AirPods that the Mac did own sent a 43-second dictation:
+            // given that, Whisper returned "Thank you."
+            if AudioRecorder.isSilentInput(samples), seconds >= Transcriber.minimumSeconds {
+                Log.error(String(format: "audio: %.2f s captured but nothing came through: %.1f%% of samples "
+                                 + "were bit-exact silence", seconds, 100 * Double(zeros) / Double(max(samples.count, 1))))
+                fail(Self.silentInputFailure(for: recorder.inputDevice))
                 return
             }
 
@@ -670,14 +687,23 @@ final class AppController {
                     samples: samples,
                     glossary: preferences.promptWithGlossary ? preferences.glossaryTerms : []
                 )
+                #if KEEP_RECORDINGS
+                keep { try RecordingArchive.saveText(output.text, named: archiveName) }
+                #endif
                 guard !output.text.isEmpty else {
                     fail("Nothing was transcribed.")
                     return
                 }
 
-                Log.info(String(format: "transcribed %d characters, language %@, in %.2f s, glossary prompt %d tokens",
+                Log.info(String(format: "transcribed %d characters, language %@, in %.2f s, glossary prompt %d tokens, "
+                                + "%d chunks, gain %+.1f dB, pause threshold %.1f dBFS",
                                 output.text.count, output.language, output.duration,
-                                output.promptTokens))
+                                output.promptTokens, output.chunks, output.inputGainDecibels,
+                                output.pauseThresholdDecibels))
+                if output.unheardSegments > 0 {
+                    Log.info("transcription: left out \(output.unheardSegments) segment(s) "
+                             + "with no sound above the pause threshold")
+                }
 
                 let cleaned = await cleanup(output)
 
@@ -816,15 +842,16 @@ final class AppController {
 
     /// Records what a cleanup pass did.
     ///
-    /// Timing and refusals are always logged: they describe the mechanism
-    /// rather than the content, and a guard firing constantly is something the
-    /// user should be able to discover. The text itself is logged only when
-    /// explicitly enabled, because these entries are public and a dictation
-    /// app's transcripts are not the system log's business by default.
+    /// Timing, and how many corrections of each kind were refused, are always
+    /// logged: they describe the mechanism rather than the content, and a guard
+    /// firing constantly is something the user should be able to discover. Any
+    /// words from the dictation, whether in the text before and after or in a
+    /// refused correction, are logged only when explicitly enabled, because
+    /// these entries are public and a dictation app's transcripts are not the
+    /// system log's business by default.
     private func report(_ result: CleanupResult) {
-        if !result.rejected.isEmpty {
-            Log.info("cleanup[\(result.mode.rawValue)] rejected: \(result.rejected.joined(separator: "; "))")
-        }
+        Refusal.logLines(for: result.rejected, mode: result.mode.rawValue,
+                         includingWords: preferences.logCleanupComparison).forEach(Log.info)
         guard result.changed else { return }
 
         Log.info(String(format: "cleanup[%@] changed in %.2f s",
@@ -935,12 +962,6 @@ final class AppController {
 
     // MARK: - Recording tick
 
-    /// Below this peak amplitude a recording is not quiet, it is empty.
-    ///
-    /// -100 dBFS. A muted room still measures around -60 dBFS through a real
-    /// microphone; a device that is handing over zeros measures nothing at all.
-    private static let silenceFloor: Float = 1e-5
-
     /// How long a recording may go without audio before it is given up on.
     ///
     /// Has to clear the pause between starting the engine and the first buffer,
@@ -948,6 +969,45 @@ final class AppController {
     /// into their headset profile on macOS 26.6. Several times that leaves room
     /// for a slower device without making a genuinely dead one wait long.
     private static let audioStallSeconds: Double = 3
+
+    /// How long a device may send only bit-exact silence before the overlay
+    /// says so.
+    ///
+    /// AirPods Max woke within 0.8 s in all 36 recordings measured, and wired
+    /// microphones produce sound from the first buffer. Silence well past that
+    /// is a device that is open but not listening.
+    private static let silentInputHintSeconds: Double = 2
+
+    /// How often a device that has sent only silence is reopened.
+    ///
+    /// Each opening has to be given time to wake: AirPods Max took up to 0.8 s,
+    /// and reopening sooner would interrupt a headset that was about to answer.
+    private static let reopenSilentInputSeconds: Double = 3
+
+    /// Shown in place of GETTING READY while the device sends only silence.
+    private static func silentInputHint(for device: AudioRecorder.InputDevice?, afterSound: Bool) -> String {
+        let name = device?.name ?? "the microphone"
+        // The device worked a moment ago, so its settings are not the cause.
+        if afterSound {
+            return "Sound from \(name) has stopped. Reopening it; if this goes on, stop and try again."
+        }
+        if device?.isBluetooth == true {
+            return "No sound from \(name) yet. If another of your devices is playing to it, "
+                + "pause the audio there and wait a moment."
+        }
+        return "No sound from \(name) yet. Check that it is not muted and its input volume is up."
+    }
+
+    /// Shown when a recording ends having received only silence.
+    private static func silentInputFailure(for device: AudioRecorder.InputDevice?) -> String {
+        let name = device?.name ?? "the microphone"
+        if device?.isBluetooth == true {
+            return "Only silence came from \(name). If another of your devices is playing to it, "
+                + "pause the audio there and try again."
+        }
+        return "Only silence came from \(name). Check that it is not muted and its input volume "
+            + "is up, then try again."
+    }
 
     private func startTicking() {
         stopTicking()
@@ -963,7 +1023,44 @@ final class AppController {
                 // The device has started producing sound, so the recording is
                 // genuinely under way and the user can be invited to speak.
                 if self.overlay.model.phase == .warmingUp, self.recorder.hasHeardAudio {
+                    self.overlay.model.message = ""
                     self.overlay.update(.recording)
+                }
+
+                let silent = self.recorder.silentSeconds
+
+                // Sound again after a silent stretch: the hint has done its job.
+                if self.overlay.model.phase == .recording, !self.overlay.model.message.isEmpty,
+                   silent < Self.silentInputHintSeconds
+                {
+                    self.overlay.model.message = ""
+                }
+
+                // Nothing but zeros, long after a headset would have woken or
+                // a working microphone would have picked up the room. Say why
+                // rather than leave the user talking to a device that is not
+                // listening, and keep listening: once the cause is cleared the
+                // device produces sound and the branches above take over. Not
+                // only at the start: AirPods have produced a moment of sound
+                // and then nothing but zeros for a whole dictation.
+                if self.overlay.model.message.isEmpty, silent >= Self.silentInputHintSeconds {
+                    let device = self.recorder.inputDevice
+                    Log.info(String(format: "audio: only silence for %.1f s from %@%@%@; showing a hint",
+                                    silent, device?.name ?? "unknown device",
+                                    device?.isBluetooth == true ? " (Bluetooth)" : "",
+                                    self.recorder.hasHeardAudio ? " after sound" : ""))
+                    self.overlay.model.message = Self.silentInputHint(
+                        for: device, afterSound: self.recorder.hasHeardAudio)
+                }
+
+                // macOS asks a headset for its microphone only when the device is
+                // opened. Reopening it while nothing is heard is what lets this
+                // recording come alive once the other device lets go, rather
+                // than only the next one.
+                if silent >= Self.reopenSilentInputSeconds, !self.isReopeningInput,
+                   Date().timeIntervalSince(self.inputOpenedAt) >= Self.reopenSilentInputSeconds
+                {
+                    self.reopenSilentInput()
                 }
 
                 if self.recordedSeconds >= Self.maximumRecordingSeconds {
@@ -985,6 +1082,37 @@ final class AppController {
         // Common mode keeps the waveform animating while a menu is open.
         RunLoop.main.add(timer, forMode: .common)
         tickTimer = timer
+    }
+
+    #if KEEP_RECORDINGS
+    /// Debug builds only; see `RecordingArchive`. A failure to save is logged
+    /// and otherwise ignored, so it can never cost the user a dictation.
+    private func keep(_ save: () throws -> URL) {
+        do {
+            Log.info("debug: kept \(try save().lastPathComponent)")
+        } catch {
+            Log.error("debug: could not keep the recording: \(error.localizedDescription)")
+        }
+    }
+    #endif
+
+    /// Reopens an input device that has sent only silence, so that macOS asks
+    /// it for its microphone again.
+    private func reopenSilentInput() {
+        isReopeningInput = true
+        Log.info("audio: reopening \(recorder.inputDevice?.name ?? "the input device") "
+                 + "to ask for its microphone again")
+        Task {
+            defer {
+                isReopeningInput = false
+                inputOpenedAt = Date()
+            }
+            do {
+                try await recorder.restartCapture()
+            } catch {
+                Log.error("audio: reopening the input device failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func stopTicking() {

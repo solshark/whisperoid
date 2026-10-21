@@ -87,7 +87,8 @@ final class Preferences {
         didSet { defaults.set(promptWithGlossary, forKey: Key.promptWithGlossary) }
     }
 
-    /// Writes the text before and after cleanup to the unified log.
+    /// Writes the text before and after cleanup, and the words of any
+    /// correction it refused, to the unified log.
     ///
     /// Off by default and deliberately not sticky-by-accident: entries are
     /// written at public privacy, so anything dictated while this is on is

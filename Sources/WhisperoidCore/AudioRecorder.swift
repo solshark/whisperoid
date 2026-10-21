@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 import Foundation
 
 /// Captures microphone audio and converts it on the fly to the 16 kHz mono
@@ -31,6 +32,22 @@ public final class AudioRecorder: @unchecked Sendable {
                 device or restart the Mac.
                 """
             }
+        }
+    }
+
+    /// The input device a recording opened, as the user knows it.
+    public struct InputDevice: Sendable, Equatable {
+        public let name: String
+
+        /// Whether it is a Bluetooth headset. Those can be connected and still
+        /// withhold their microphone: AirPods that another of the user's devices
+        /// is playing to refuse the Mac, which then receives a correctly
+        /// formatted stream of bit-exact zeros for as long as it asks.
+        public let isBluetooth: Bool
+
+        public init(name: String, isBluetooth: Bool) {
+            self.name = name
+            self.isBluetooth = isBluetooth
         }
     }
 
@@ -78,7 +95,7 @@ public final class AudioRecorder: @unchecked Sendable {
     private var engineQueue = AudioRecorder.makeEngineQueue()
 
     private static func makeEngineQueue() -> DispatchQueue {
-        DispatchQueue(label: "com.solshark.whisperoid.audio-engine")
+        DispatchQueue(label: "online.blackmeridian.whisperoid.audio-engine")
     }
 
     /// Incremented whenever a queue is abandoned, which makes every reference to
@@ -97,7 +114,7 @@ public final class AudioRecorder: @unchecked Sendable {
 
     /// Runs the deadline timers. Never touches the engine, so it stays
     /// responsive precisely when the audio queue does not.
-    private let watchdogQueue = DispatchQueue(label: "com.solshark.whisperoid.audio-engine-watchdog")
+    private let watchdogQueue = DispatchQueue(label: "online.blackmeridian.whisperoid.audio-engine-watchdog")
 
     /// Rebuilt for every recording, so each one resolves the input device as it
     /// stands rather than as it was. Confined to `engineQueue`, as is
@@ -124,7 +141,7 @@ public final class AudioRecorder: @unchecked Sendable {
 
     /// Delivers capture callbacks. Separate from `engineQueue` so a sample
     /// arriving never waits behind a device operation.
-    private let sampleQueue = DispatchQueue(label: "com.solshark.whisperoid.audio-samples")
+    private let sampleQueue = DispatchQueue(label: "online.blackmeridian.whisperoid.audio-samples")
 
     private let lock = NSLock()
 
@@ -133,7 +150,11 @@ public final class AudioRecorder: @unchecked Sendable {
     private var lastAudioUptime: UInt64?
     private var reportedFirstBuffer = false
     private var heardAudio = false
+    /// Samples of bit-exact silence since the device last produced sound, or
+    /// since the recording started if it has not.
+    private var silentRun = 0
     private var reportedDrop = false
+    private var openedDevice: InputDevice?
     private var samples: [Float] = []
     private var level: Float = 0
     private var levels: [Float] = []
@@ -157,6 +178,74 @@ public final class AudioRecorder: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return heardAudio
+    }
+
+    /// How long the device has delivered nothing but bit-exact silence, up to
+    /// now: since the recording started while it has not produced sound, and
+    /// since its last sound after that.
+    ///
+    /// A headset waking up accounts for under a second of this. Much more than
+    /// that is a device that is open and not listening, at any point: AirPods
+    /// have gone over to zeros after a moment of sound and stayed there for a
+    /// whole dictation. A working microphone never does. Across 248 recorded
+    /// dictations on 2026-10-16, the longest run of bit-exact silence after
+    /// the first sound was 0.18 s.
+    public var silentSeconds: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return Double(silentRun) / Self.targetSampleRate
+    }
+
+    /// The least silence that justifies reopening the device: well past the
+    /// 0.18 s a working microphone was measured at, and short of the reopen
+    /// interval the application uses.
+    static let reopenMinimumSilentSeconds: Double = 1
+
+    /// Whether reopening the device now could help and cannot hurt: only while
+    /// recording, and only while the device is silent, so a reopen that
+    /// arrives late can neither turn the microphone back on nor cut into
+    /// speech.
+    static func reopenAllowed(isRunning: Bool, silentSeconds: Double) -> Bool {
+        isRunning && silentSeconds >= reopenMinimumSilentSeconds
+    }
+
+    /// Below this peak amplitude a recording is not quiet, it is empty: -100
+    /// dBFS. A muted room still measures around -60 dBFS through a real
+    /// microphone.
+    static let silenceFloor: Float = 1e-5
+
+    /// The share of bit-exact silence above which a recording counts as empty.
+    /// Measured on 2026-10-16: recordings from a device that sent nothing were
+    /// 99.6 to 100 % zeros, a brief blip of sound included, and working ones
+    /// at most 1.8 %.
+    static let silentSampleFraction = 0.99
+
+    /// Whether a recording holds nothing to transcribe: a device that handed
+    /// over zeros, perhaps after a moment of sound, rather than a quiet room.
+    /// Whisper invents text from such input, most often "Thank you."
+    public static func isSilentInput(_ samples: [Float]) -> Bool {
+        guard !samples.isEmpty else { return false }
+        var zeros = 0
+        var peak: Float = 0
+        for sample in samples {
+            if sample == 0 { zeros += 1 }
+            peak = max(peak, abs(sample))
+        }
+        return peak < silenceFloor || Double(zeros) / Double(samples.count) >= silentSampleFraction
+    }
+
+    /// The device the current or most recent recording opened.
+    public var inputDevice: InputDevice? {
+        lock.lock()
+        defer { lock.unlock() }
+        return openedDevice
+    }
+
+    /// CoreAudio's transport types for Bluetooth Classic and Bluetooth LE.
+    static func isBluetooth(transportType: Int32) -> Bool {
+        let type = UInt32(bitPattern: transportType)
+        return type == kAudioDeviceTransportTypeBluetooth
+            || type == kAudioDeviceTransportTypeBluetoothLE
     }
 
     /// How long since the tap last delivered audio, measured from the start of
@@ -454,9 +543,46 @@ public final class AudioRecorder: @unchecked Sendable {
         reportedFirstBuffer = false
         reportedDrop = false
         heardAudio = false
+        silentRun = 0
         lock.unlock()
 
         isRunning = true
+    }
+
+    /// Reopens the input device mid-recording, keeping everything captured.
+    ///
+    /// Opening the device is what makes macOS ask a Bluetooth headset for its
+    /// microphone, and it asks only then. AirPods that another device is
+    /// playing to refuse, and nothing asks again once that device stops: a
+    /// session left running went on receiving zeros for 14 s after the other
+    /// device fell idle, while the next recording got the microphone at once.
+    /// Reopening asks again. It also resolves the default input afresh, so a
+    /// microphone the user switches to in the meantime is picked up.
+    ///
+    /// Does nothing once the recording has stopped, or unless the device is
+    /// silent right now (`reopenAllowed`), so a reopen that arrives late can
+    /// neither turn the microphone back on nor interrupt speech.
+    public func restartCapture() async throws {
+        try await withEngineQueue("reopen the input device") { generation in
+            try self.restartOnQueue(generation: generation)
+        }
+    }
+
+    private func restartOnQueue(generation: Int) throws {
+        guard Self.reopenAllowed(isRunning: isRunning, silentSeconds: silentSeconds) else { return }
+
+        try beginCaptureOnQueue(generation: generation)
+
+        guard isCurrent(generation) else {
+            throw RecorderError.timedOut("reopen the input device")
+        }
+
+        // The reopened device takes a moment to deliver its first buffer, and
+        // that pause is not a stall.
+        lock.lock()
+        lastAudioUptime = DispatchTime.now().uptimeNanoseconds
+        reportedFirstBuffer = false
+        lock.unlock()
     }
 
     /// Builds an engine, installs the tap and starts capture, leaving whatever
@@ -527,6 +653,14 @@ public final class AudioRecorder: @unchecked Sendable {
 
         self.session = session
         self.sampleReceiver = receiver
+
+        let opened = InputDevice(
+            name: device.localizedName,
+            isBluetooth: Self.isBluetooth(transportType: device.transportType)
+        )
+        lock.lock()
+        openedDevice = opened
+        lock.unlock()
 
         onDiagnostic?("capture: device=\(device.localizedName) [\(device.uniqueID)]")
 
@@ -661,6 +795,7 @@ public final class AudioRecorder: @unchecked Sendable {
         samples.removeAll()
         levels.removeAll()
         level = 0
+        silentRun = 0
         cachedConverter = nil
         cachedConverterFormat = nil
         return captured
@@ -798,6 +933,7 @@ public final class AudioRecorder: @unchecked Sendable {
         // its music profile. Anything else, however quiet, means the microphone
         // is genuinely live.
         let audible = converted.contains { $0 != 0 }
+        let silentTail = converted.lastIndex { $0 != 0 }.map { frameCount - 1 - $0 } ?? frameCount
 
         lock.lock()
         let firstAudible = audible && !heardAudio
@@ -813,6 +949,7 @@ public final class AudioRecorder: @unchecked Sendable {
             levels.removeAll()
         }
         if audible { heardAudio = true }
+        silentRun = audible ? silentTail : silentRun + frameCount
         lastAudioUptime = DispatchTime.now().uptimeNanoseconds
         samples.append(contentsOf: converted)
         level = rms

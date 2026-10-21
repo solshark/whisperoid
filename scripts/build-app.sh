@@ -2,14 +2,22 @@
 #
 # Builds and signs Whisperoid.app from the SwiftPM executable.
 #
-# SwiftPM cannot emit an .app bundle, so the binary is wrapped by hand. Signing
-# uses a real certificate rather than an ad-hoc signature: an ad-hoc signature
-# changes on every build, which invalidates the permissions macOS granted to the
-# previous build and forces the microphone prompt to reappear each time.
+# SwiftPM cannot emit an .app bundle, so the binary is wrapped by hand.
+#
+# The signing identity is always named by whoever builds: this script never
+# picks one from the keychain, where it could pick another team's certificate.
+# Prefer a real certificate to an ad-hoc signature: an ad-hoc signature changes
+# on every build, which invalidates the permissions macOS granted to the
+# previous build and makes the microphone prompt reappear each time.
 #
 # Environment:
 #   CONFIG                     debug | release (default: release)
-#   WHISPEROID_SIGN_IDENTITY   codesign identity to use
+#   WHISPEROID_SIGN_IDENTITY   required: the codesign identity's full name, as
+#                              `security find-identity -v -p codesigning`
+#                              lists it, or "-" for an ad-hoc signature
+#   WHISPEROID_KEEP_RECORDINGS 1 builds the debugging variant that keeps every
+#                              recording and its transcript on disk; see
+#                              RecordingArchive. Never distribute such a build.
 
 set -euo pipefail
 
@@ -18,31 +26,18 @@ CONFIG="${CONFIG:-release}"
 APP="$ROOT/build/Whisperoid.app"
 ENTITLEMENTS="$ROOT/Resources/Whisperoid.entitlements"
 
-# Chooses whatever is actually available rather than naming one identity.
-# Certificates expire, and a hardcoded name fails the build the day it does.
-#
-# Developer ID first: it is the only identity Gatekeeper accepts on a Mac other
-# than this one. Note that changing identity changes the app's designated
-# requirement, so macOS treats it as a different application and the microphone
-# permission has to be granted again.
-default_identity() {
-	local list identity
-	list="$(security find-identity -v -p codesigning 2>/dev/null)"
-
-	for kind in "Developer ID Application" "Apple Development"; do
-		identity="$(echo "$list" | grep "$kind" | head -1 | sed -E 's/.*"(.*)".*/\1/')"
-		if [[ -n "$identity" ]]; then
-			echo "$identity"
-			return
-		fi
-	done
-
-	echo "warning: no signing certificate found; falling back to ad-hoc." >&2
-	echo "         permissions will be re-requested after every build." >&2
-	echo "-"
-}
-
-IDENTITY="${WHISPEROID_SIGN_IDENTITY:-$(default_identity)}"
+if [[ -z "${WHISPEROID_SIGN_IDENTITY:-}" ]]; then
+	echo "error: name the signing identity in WHISPEROID_SIGN_IDENTITY, for example" >&2
+	echo "         WHISPEROID_SIGN_IDENTITY=\"Developer ID Application: Your Name (TEAMID)\"" >&2
+	echo "       \`security find-identity -v -p codesigning\` lists the identities available." >&2
+	echo "       Use \"-\" for an ad-hoc signature; macOS then asks for the microphone" >&2
+	echo "       again after every build." >&2
+	exit 1
+fi
+IDENTITY="$WHISPEROID_SIGN_IDENTITY"
+if [[ "$IDENTITY" == "-" ]]; then
+	echo "warning: ad-hoc signature; macOS will ask for the microphone again after every build" >&2
+fi
 
 # Built with xcodebuild rather than `swift build`.
 #
@@ -65,6 +60,12 @@ esac
 
 DERIVED="$ROOT/.build/xcode"
 
+CONDITIONS=()
+if [[ "${WHISPEROID_KEEP_RECORDINGS:-}" == "1" ]]; then
+	CONDITIONS=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) KEEP_RECORDINGS')
+	echo "warning: building the debugging variant that keeps every recording on disk" >&2
+fi
+
 xcodebuild build \
 	-scheme Whisperoid \
 	-destination 'platform=macOS' \
@@ -72,6 +73,7 @@ xcodebuild build \
 	-configuration "$XCCONFIG" \
 	-skipPackagePluginValidation \
 	-skipMacroValidation \
+	${CONDITIONS[@]+"${CONDITIONS[@]}"} \
 	>/dev/null
 
 BIN_DIR="$DERIVED/Build/Products/$XCCONFIG"
@@ -99,6 +101,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/Whisperoid"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+
+# Shown in About, so the variant is never mistaken for a release.
+if [[ "${WHISPEROID_KEEP_RECORDINGS:-}" == "1" ]]; then
+	version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+	/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version-recordings" "$APP/Contents/Info.plist"
+fi
 
 # Referenced by CFBundleIconFile. Regenerate with scripts/make-icon.swift.
 if [[ -f "$ROOT/Resources/Whisperoid.icns" ]]; then

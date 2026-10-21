@@ -7,11 +7,11 @@ import os
 /// LaunchServices has no terminal attached, so stderr is discarded and the
 /// messages are invisible exactly when they are most needed.
 ///
-///     log stream --predicate 'subsystem == "com.solshark.whisperoid"'
-///     log show --predicate 'subsystem == "com.solshark.whisperoid"' --last 5m
+///     log stream --predicate 'subsystem == "online.blackmeridian.whisperoid"'
+///     log show --predicate 'subsystem == "online.blackmeridian.whisperoid"' --last 5m
 enum Log {
 
-    private static let logger = Logger(subsystem: "com.solshark.whisperoid", category: "app")
+    private static let logger = Logger(subsystem: "online.blackmeridian.whisperoid", category: "app")
 
     /// Uses `notice` rather than `info`: info-level entries are held in memory
     /// only and are routinely dropped before `log show` can retrieve them.

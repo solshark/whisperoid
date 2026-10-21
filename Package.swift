@@ -46,6 +46,15 @@ let package = Package(
             name: "cleanupcheck",
             dependencies: ["WhisperoidCore"]
         ),
+        // Development tool: replays recordings through the transcription path
+        // under controlled variations and scores word recall.
+        .executableTarget(
+            name: "replaycheck",
+            dependencies: [
+                "WhisperoidCore",
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
+            ]
+        ),
         // Runs as a gate in scripts/package.sh: a release is not built from
         // code that does not pass these.
         .testTarget(

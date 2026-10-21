@@ -30,4 +30,18 @@ struct TranscriberPromptTests {
         // glossary prompt can lose whole windows. See decodingOptions().
         #expect(Transcriber.decodingOptions().chunkingStrategy == .vad)
     }
+
+    @Test("A piece that starts mid-sentence is not abandoned")
+    func firstTokenCheckOff() {
+        // With the check, such a piece can fail at every temperature and come
+        // back empty. See decodingOptions().
+        #expect(Transcriber.decodingOptions().firstTokenLogProbThreshold == nil)
+    }
+
+    @Test("A piece the model stops early is resumed where it stopped")
+    func decodesWithTimestamps() {
+        // Only timestamps tell WhisperKit where the model stopped, so it can
+        // decode the rest. See decodingOptions().
+        #expect(Transcriber.decodingOptions().withoutTimestamps == false)
+    }
 }

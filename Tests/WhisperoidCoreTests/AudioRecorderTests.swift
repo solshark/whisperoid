@@ -179,6 +179,167 @@ struct AudioRecorderTests {
         #expect(recorder.recordedSeconds > 0.9, "audio was discarded after the device was awake")
     }
 
+    /// What the overlay waits on before saying the device is not listening.
+    /// AirPods that another device is playing to send zeros for as long as the
+    /// recording runs.
+    @Test("Silence is timed until the device produces sound")
+    func silenceIsTimedUntilAwake() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 2.5, amplitude: 0)
+        #expect(abs(recorder.silentSeconds - 2.5) < 0.1, "silent for \(recorder.silentSeconds) s")
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+        #expect(recorder.silentSeconds == 0, "the device woke but still counts as silent")
+    }
+
+    /// AirPods that the Mac owned have produced a few milliseconds of sound and
+    /// then nothing but zeros for a 43-second dictation. A pause in speech is
+    /// never bit-exact silence through a working microphone, so a run of it is
+    /// counted wherever it starts.
+    @Test("Silence after the device has woken is counted from its last sound")
+    func silenceAfterWakingIsCounted() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 2.5, amplitude: 0)
+
+        #expect(recorder.hasHeardAudio)
+        #expect(abs(recorder.silentSeconds - 2.5) < 0.05, "silent for \(recorder.silentSeconds) s")
+    }
+
+    /// The 2026-10-16 failure: zeros, a blip of 6 ms, then zeros again.
+    @Test("A blip of sound does not end a device's silence")
+    func blipDoesNotEndSilence() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.6, amplitude: 0)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.006, amplitude: 0.0003)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 3.0, amplitude: 0)
+
+        #expect(recorder.hasHeardAudio)
+        #expect(abs(recorder.silentSeconds - 3.0) < 0.05, "silent for \(recorder.silentSeconds) s")
+    }
+
+    /// The negative control: a microphone in a quiet room is quiet, not
+    /// silent. The tone here is 120 dB below full scale and still counts.
+    @Test("Quiet sound is not silence")
+    func quietSoundIsNotSilence() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 2.5, amplitude: 0.000001)
+
+        #expect(recorder.silentSeconds < 0.01, "silent for \(recorder.silentSeconds) s")
+    }
+
+    @Test("Sound ends a run of silence")
+    func soundEndsSilence() {
+        let recorder = AudioRecorder()
+
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 2.5, amplitude: 0)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+
+        #expect(recorder.silentSeconds < 0.01, "silent for \(recorder.silentSeconds) s")
+    }
+
+    @Test("A device is reopened only while recording and silent for a second or more")
+    func reopenOnlyWhileSilent() {
+        #expect(AudioRecorder.reopenAllowed(isRunning: true, silentSeconds: 2.0))
+        #expect(AudioRecorder.reopenAllowed(isRunning: true, silentSeconds: 1.0))
+        #expect(!AudioRecorder.reopenAllowed(isRunning: true, silentSeconds: 0.5),
+                "a gap a working microphone can produce")
+        #expect(!AudioRecorder.reopenAllowed(isRunning: false, silentSeconds: 5.0),
+                "the recording has stopped")
+    }
+
+    // MARK: - Silent recordings
+
+    /// A 16 kHz signal between `amplitude` and five times it, never zero, with
+    /// one sample in `zeroEvery` set to bit-exact zero when that is above 1.
+    private func signal(seconds: Double, amplitude: Float, zeroEvery: Int = 1) -> [Float] {
+        (0..<Int(seconds * 16_000)).map { index in
+            zeroEvery > 1 && index % zeroEvery == 0 ? 0 : amplitude * (sinf(Float(index) * 0.3) * 2 + 3)
+        }
+    }
+
+    @Test("A recording that is nothing but zeros is silent input")
+    func zerosAreSilentInput() {
+        #expect(AudioRecorder.isSilentInput([Float](repeating: 0, count: 48_000)))
+    }
+
+    /// As the 2026-10-16 recording was: 101 samples of sound at -72 dBFS among
+    /// 42.9 s of zeros, which Whisper transcribed as "Thank you."
+    @Test("A blip among zeros is silent input")
+    func blipAmongZerosIsSilentInput() {
+        var recording = [Float](repeating: 0, count: 687_040)
+        for index in 9_600..<9_701 { recording[index] = 0.00026 }
+        #expect(AudioRecorder.isSilentInput(recording))
+    }
+
+    @Test("Noise below -100 dBFS is silent input")
+    func noiseBelowTheFloorIsSilentInput() {
+        // Peaks at 5 × 1.5e-6, below the 1e-5 floor.
+        #expect(AudioRecorder.isSilentInput(signal(seconds: 3, amplitude: 0.0000015)))
+    }
+
+    /// The negative controls: working recordings had up to 1.8 % bit-exact
+    /// zeros, and a quiet room is quiet, not empty.
+    @Test("Recordings with sound are not silent input", arguments: [
+        (amplitude: Float(0.05), zeroEvery: 1),     // speech, no zeros
+        (amplitude: Float(0.05), zeroEvery: 50),    // speech with 2 % zeros
+        (amplitude: Float(0.0002), zeroEvery: 1),   // a quiet room, about -60 dBFS
+    ])
+    func soundIsNotSilentInput(amplitude: Float, zeroEvery: Int) {
+        #expect(!AudioRecorder.isSilentInput(signal(seconds: 3, amplitude: amplitude, zeroEvery: zeroEvery)))
+    }
+
+    @Test("An empty recording is not judged here")
+    func emptyIsNotSilentInput() {
+        #expect(!AudioRecorder.isSilentInput([]))
+    }
+
+    /// A reopen is scheduled from a timer and can arrive after the user has
+    /// stopped. Opening the device then would switch the microphone back on
+    /// with nobody recording. `inputDevice` is set only when a device is
+    /// actually opened, so it staying nil is what proves nothing was.
+    @Test("A reopen after the recording has stopped leaves the microphone closed")
+    func reopenAfterStopDoesNothing() async throws {
+        let recorder = AudioRecorder()
+
+        try await recorder.restartCapture()
+
+        #expect(recorder.inputDevice == nil)
+    }
+
+    /// Reopening costs about a quarter of a second of audio, which is free
+    /// while the device sends only zeros and is speech while it sends sound.
+    @Test("A device producing sound is not reopened")
+    func reopenAfterSoundDoesNothing() async throws {
+        let recorder = AudioRecorder()
+        recorder.setRunningForTesting(true)
+        feed(recorder, channels: 1, sampleRate: 48_000, seconds: 0.2, amplitude: 0.5)
+
+        try await recorder.restartCapture()
+
+        #expect(recorder.inputDevice == nil)
+        #expect(recorder.recordedSeconds > 0.15, "audio captured before the reopen was lost")
+    }
+
+    /// Spelled out as four-character codes rather than CoreAudio's constants,
+    /// so the test does not simply restate the implementation.
+    @Test("Bluetooth Classic and LE devices are recognised, others are not")
+    func recognisesBluetooth() {
+        func code(_ text: String) -> Int32 {
+            Int32(bitPattern: text.utf8.reduce(0) { $0 << 8 | UInt32($1) })
+        }
+        #expect(AudioRecorder.isBluetooth(transportType: code("blue")))
+        #expect(AudioRecorder.isBluetooth(transportType: code("blea")))
+        #expect(!AudioRecorder.isBluetooth(transportType: code("usb ")))
+        #expect(!AudioRecorder.isBluetooth(transportType: code("bltn")))
+    }
+
     @Test("Silence produces a level of zero and speech does not")
     func levelsTrackAmplitude() {
         let quiet = AudioRecorder()

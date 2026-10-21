@@ -34,5 +34,8 @@ final class OverlayModel {
     var text = ""
     var language = ""
     var duration: TimeInterval = 0
+
+    /// Why the recording failed, or, while warming up, why the device is not
+    /// producing sound. Empty when there is nothing to say.
     var message = ""
 }

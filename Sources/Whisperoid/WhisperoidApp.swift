@@ -1,10 +1,21 @@
 import AppKit
 import SwiftUI
+import WhisperoidCore
 
 @main
 struct WhisperoidApp: App {
 
-    @State private var controller = AppController()
+    @State private var controller: AppController
+
+    init() {
+        // Before anything reads a setting: the controller's preferences and
+        // shortcuts load as it is created.
+        let imported = SettingsMigration.importPreviousSettings()
+        if imported > 0 {
+            Log.info("startup: imported \(imported) settings from \(SettingsMigration.previousDomain)")
+        }
+        _controller = State(initialValue: AppController())
+    }
 
     var body: some Scene {
         MenuBarExtra {
