@@ -135,6 +135,10 @@ public final class AudioRecorder: @unchecked Sendable {
     private var session: AVCaptureSession?
     private var isRunning = false
 
+    /// Silence playing to the headset being recorded, while it is a Bluetooth
+    /// one. Lives and dies with `session`, on `engineQueue`.
+    private var keepAlive: HeadsetKeepAlive?
+
     /// Receives sample buffers off the capture session. Held because the output
     /// keeps only a weak reference to it.
     private var sampleReceiver: SampleReceiver?
@@ -319,6 +323,7 @@ public final class AudioRecorder: @unchecked Sendable {
 
     deinit {
         session?.stopRunning()
+        keepAlive?.stop()
     }
 
     // MARK: - Deadlines
@@ -674,16 +679,44 @@ public final class AudioRecorder: @unchecked Sendable {
         }
 
         onDiagnostic?("capture: session running")
+
+        if opened.isBluetooth, isCurrent(generation) {
+            startKeepAliveOnQueue(inputUID: device.uniqueID)
+        }
     }
 
-    /// Stops and forgets the session, if there is one.
+    /// Starts silence playing to the headset being recorded; see
+    /// `HeadsetKeepAlive`. Never fails the recording: the microphone usually
+    /// works without it, and the stop-time check still catches one that did
+    /// not.
+    private func startKeepAliveOnQueue(inputUID: String) {
+        do {
+            let keepAlive = try HeadsetKeepAlive(inputUID: inputUID)
+            self.keepAlive = keepAlive
+            onDiagnostic?("capture: playing silence to \(keepAlive.outputUID) while recording")
+        } catch {
+            onDiagnostic?("capture: could not play silence to the headset: \(error.localizedDescription)")
+        }
+    }
+
+    /// Stops and forgets the session and the headset's silence, if there are
+    /// any.
     private func tearDownSessionOnQueue() {
-        guard let session else { return }
-        if session.isRunning { session.stopRunning() }
-        for input in session.inputs { session.removeInput(input) }
-        for output in session.outputs { session.removeOutput(output) }
-        self.session = nil
-        sampleReceiver = nil
+        if let session {
+            if session.isRunning { session.stopRunning() }
+            for input in session.inputs { session.removeInput(input) }
+            for output in session.outputs { session.removeOutput(output) }
+            self.session = nil
+            sampleReceiver = nil
+        }
+
+        // After the input, never before: another output ending while a
+        // headset's input was running is what preceded every recording that
+        // received nothing.
+        if let report = keepAlive?.stop() {
+            onDiagnostic?("capture: stopped silence after \(report)")
+        }
+        keepAlive = nil
     }
 
     /// Receives sample buffers from the capture session and hands them on as
