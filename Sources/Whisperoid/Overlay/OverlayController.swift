@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WhisperoidCore
 
 /// Owns the overlay panel: creation, placement, phase-driven sizing and fade-out.
 @MainActor
@@ -7,9 +8,15 @@ final class OverlayController {
 
     let model = OverlayModel()
 
-    private static let size = NSSize(width: 560, height: 220)
+    private let preferences: Preferences
 
     private var panel: OverlayPanel?
+
+    /// The style the current panel was built in. A panel in any other style is
+    /// replaced rather than reused, so a change in Settings shows the next
+    /// time the overlay appears.
+    private var panelStyle: OverlayStyle?
+
     private var dismissTask: Task<Void, Never>?
 
     /// Bumped whenever a pending dismissal is called off. A fade-out that is
@@ -18,8 +25,16 @@ final class OverlayController {
     /// shown again since.
     private var generation = 0
 
+    init(preferences: Preferences) {
+        self.preferences = preferences
+    }
+
     func present(_ phase: OverlayModel.Phase) {
         cancelDismissal()
+
+        if panel != nil, panelStyle != preferences.overlayStyle {
+            teardown()
+        }
 
         setPhase(phase)
 
@@ -95,6 +110,7 @@ final class OverlayController {
         // survives inside the window and keeps its display link alive.
         panel.contentView = nil
         self.panel = nil
+        panelStyle = nil
     }
 
     // MARK: - Panel lifecycle
@@ -102,28 +118,33 @@ final class OverlayController {
     private func existingPanel() -> OverlayPanel {
         if let panel { return panel }
 
-        let created = OverlayPanel(contentSize: Self.size)
+        let style = preferences.overlayStyle
+        let created = OverlayPanel(contentSize: style.panelSize)
         // No window shadow: it would outline an invisible rectangle around a
-        // graphic that has no panel behind it.
+        // graphic that has no panel behind it, or one smaller than the panel.
         created.hasShadow = false
-        let hosting = NSHostingView(rootView: OverlayView(model: model))
+        let hosting = NSHostingView(rootView: OverlayContent(model: model, style: style))
         hosting.frame = NSRect(origin: .zero, size: created.frame.size)
         hosting.autoresizingMask = [.width, .height]
         created.contentView = hosting
 
         panel = created
+        panelStyle = style
         return created
     }
 
     private func place(_ panel: OverlayPanel) {
         let pointer = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(pointer) }
-            ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return }
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) })
+            ?? NSScreen.main else { return }
 
-        let size = panel.frame.size
+        let style = panelStyle ?? preferences.overlayStyle
         panel.setFrameOrigin(
-            NSPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2)
+            style.panelOrigin(
+                frame: screen.frame,
+                visibleFrame: screen.visibleFrame,
+                topInset: screen.safeAreaInsets.top
+            )
         )
     }
 

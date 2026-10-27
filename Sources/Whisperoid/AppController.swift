@@ -38,6 +38,7 @@ final class AppController {
     private static let waveformInterval: TimeInterval = 1.0 / 30.0
     private static let successDismissDelay: Double = 3.0
     private static let failureDismissDelay: Double = 4.5
+    private static let previewDismissDelay: Double = 2.5
 
     /// How long a startup phase may go without changing before the status says
     /// so. Core ML preparation legitimately takes minutes on a machine that has
@@ -84,7 +85,7 @@ final class AppController {
     @ObservationIgnored private var progressTimer: Timer?
     @ObservationIgnored private var loggedDownloadBytes: Int64 = -1
 
-    let preferences = Preferences()
+    let preferences: Preferences
 
     private let recorder = AudioRecorder()
 
@@ -96,7 +97,7 @@ final class AppController {
     private var isStartingRecording = false
     private let transcriber = Transcriber()
     private let injector: any TextInjector = ClipboardInjector()
-    private let overlay = OverlayController()
+    private let overlay: OverlayController
     @ObservationIgnored private var settingsWindow: HostedWindowController<SettingsView>?
     @ObservationIgnored private var aboutWindow: HostedWindowController<AboutView>?
     @ObservationIgnored private var acknowledgementsWindow: HostedWindowController<AcknowledgementsView>?
@@ -122,6 +123,24 @@ final class AppController {
             }
         }
         settingsWindow?.show()
+    }
+
+    /// Shows the overlay for a moment in the chosen style, so the styles can be
+    /// compared from Settings without dictating. Does nothing while a dictation
+    /// is using the overlay.
+    func previewOverlay() {
+        switch state {
+        case .recording, .transcribing:
+            return
+        case .loading, .idle, .failed:
+            break
+        }
+        guard !isStartingRecording else { return }
+
+        overlay.model.levels = []
+        overlay.model.message = ""
+        overlay.present(.transcribing)
+        overlay.dismiss(after: Self.previewDismissDelay)
     }
 
     func showAbout() {
@@ -181,6 +200,10 @@ final class AppController {
     var isSetupComplete: Bool { isModelReady && microphoneAccess == .granted }
 
     init() {
+        let preferences = Preferences()
+        self.preferences = preferences
+        overlay = OverlayController(preferences: preferences)
+
         embeddedCleaner = (try? Paths.ensureSupportDirectory()).map {
             EmbeddedCleaner(storageDirectory: $0)
         }

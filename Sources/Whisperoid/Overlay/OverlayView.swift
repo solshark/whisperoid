@@ -1,7 +1,29 @@
 import AppKit
 import SwiftUI
+import WhisperoidCore
 
-/// The dictation overlay: flowing ribbons with a single line beneath.
+/// The overlay in the style chosen in Settings.
+struct OverlayContent: View {
+
+    let model: OverlayModel
+    let style: OverlayStyle
+
+    var body: some View {
+        switch style {
+        case .classic:
+            // Light on dark shade whatever the system appearance, which is
+            // also what keeps the ribbons in their original colours.
+            OverlayView(model: model)
+                .environment(\.colorScheme, .dark)
+        case .glassCard:
+            GlassOverlayView(model: model, layout: .card)
+        case .glassPill:
+            GlassOverlayView(model: model, layout: .pill)
+        }
+    }
+}
+
+/// The classic dictation overlay: flowing ribbons with a single line beneath.
 ///
 /// Completion is signalled by the ribbons settling to a calm bright line rather
 /// than by an icon. A system checkmark clashed badly with the palette and cut
@@ -19,7 +41,7 @@ struct OverlayView: View {
             // the caption onto the bottom edge — exactly where the elliptical
             // backdrop has already faded to nothing, which is what made the
             // numbers unreadable.
-            WavesVisual(levels: model.levels, mode: mode)
+            WavesVisual(levels: model.levels, mode: model.wavesMode)
                 .frame(height: 96)
             caption
                 .legibleOverAnything()
@@ -28,15 +50,6 @@ struct OverlayView: View {
         .background(SoftBackdrop())
         .shadow(color: .black.opacity(0.45), radius: 6, y: 2)
         .animation(.easeInOut(duration: 0.2), value: model.phase)
-    }
-
-    private var mode: WavesVisual.Mode {
-        switch model.phase {
-        case .warmingUp: .working
-        case .recording: .listening
-        case .transcribing, .cleaning: .working
-        case .done, .failed: .settled(since: model.phaseChangedAt)
-        }
     }
 
     @ViewBuilder
@@ -56,7 +69,7 @@ struct OverlayView: View {
             // A device that has gone silent mid-recording says so in place of
             // the timer, which would otherwise suggest all is well.
             if model.message.isEmpty {
-                Text(Self.timestamp(model.elapsed))
+                Text(model.timestamp)
                     .font(.system(size: 23, weight: .light, design: .monospaced))
                     .monospacedDigit()
                     .tracking(3)
@@ -78,7 +91,7 @@ struct OverlayView: View {
                 .foregroundStyle(.white.opacity(0.88))
 
         case .done:
-            Text(doneSummary)
+            Text(model.doneSummary)
                 .font(.system(size: 17, weight: .light, design: .monospaced))
                 .monospacedDigit()
                 .tracking(2)
@@ -99,15 +112,28 @@ struct OverlayView: View {
             .lineLimit(3)
             .padding(.horizontal, 40)
     }
+}
 
-    private var doneSummary: String {
-        let language = model.language.isEmpty ? "?" : model.language
-        return String(format: "Copied · %@ · %.2f s", language, model.duration)
+/// What every style shows, so they differ in look and never in content.
+extension OverlayModel {
+
+    var wavesMode: WavesVisual.Mode {
+        switch phase {
+        case .warmingUp: .working
+        case .recording: .listening
+        case .transcribing, .cleaning: .working
+        case .done, .failed: .settled(since: phaseChangedAt)
+        }
     }
 
-    private static func timestamp(_ seconds: TimeInterval) -> String {
-        let whole = Int(seconds)
+    var timestamp: String {
+        let whole = Int(elapsed)
         return String(format: "%d:%02d", whole / 60, whole % 60)
+    }
+
+    var doneSummary: String {
+        let shown = language.isEmpty ? "?" : language
+        return String(format: "Copied · %@ · %.2f s", shown, duration)
     }
 }
 

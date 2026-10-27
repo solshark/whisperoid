@@ -17,6 +17,7 @@ final class Preferences {
         static let logCleanupComparison = "logCleanupComparison"
         static let cleanupIdleUnloadMinutes = "cleanupIdleUnloadMinutes"
         static let promptWithGlossary = "promptWithGlossary"
+        static let overlayStyle = "overlayStyle"
     }
 
     static let silenceRange: ClosedRange<Double> = 1.5...10.0
@@ -87,6 +88,12 @@ final class Preferences {
         didSet { defaults.set(promptWithGlossary, forKey: Key.promptWithGlossary) }
     }
 
+    /// How the dictation overlay looks and where it sits. Classic by default,
+    /// so nobody's overlay changes until they choose another style.
+    var overlayStyle: OverlayStyle {
+        didSet { defaults.set(overlayStyle.rawValue, forKey: Key.overlayStyle) }
+    }
+
     /// Writes the text before and after cleanup, and the words of any
     /// correction it refused, to the unified log.
     ///
@@ -129,6 +136,7 @@ final class Preferences {
             Key.logCleanupComparison: false,
             Key.cleanupIdleUnloadMinutes: 2,
             Key.promptWithGlossary: false,
+            Key.overlayStyle: OverlayStyle.classic.rawValue,
             Key.cleanupGlossary: ModelOutput.defaultGlossary
                 .joined(separator: "\n"),
             // Measured gaps within continuous speech reach 1.9 s, so 3 s leaves
@@ -146,5 +154,6 @@ final class Preferences {
         logCleanupComparison = defaults.bool(forKey: Key.logCleanupComparison)
         cleanupIdleUnloadMinutes = defaults.integer(forKey: Key.cleanupIdleUnloadMinutes)
         promptWithGlossary = defaults.bool(forKey: Key.promptWithGlossary)
+        overlayStyle = OverlayStyle(rawValue: defaults.string(forKey: Key.overlayStyle) ?? "") ?? .classic
     }
 }

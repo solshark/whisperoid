@@ -191,6 +191,23 @@ struct SettingsView: View {
     private var general: some View {
         Form {
             Section {
+                Picker("Recording indicator", selection: $preferences.overlayStyle) {
+                    ForEach(OverlayStyle.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+
+                HStack {
+                    Spacer()
+                    Button("Preview") { controller.previewOverlay() }
+                }
+
+                caption("Classic is the original overlay in the middle of the screen. Glass card shows the same in a smaller panel there, and Glass pill sits below the menu bar, growing only to show a warning. The glass styles use Liquid Glass on macOS 26 and later, and a frosted material on earlier versions.")
+            }
+            // Shows the new style straight away rather than at the next dictation.
+            .onChange(of: preferences.overlayStyle) { controller.previewOverlay() }
+
+            Section {
                 Toggle("Play sounds", isOn: $preferences.playSounds)
             }
 

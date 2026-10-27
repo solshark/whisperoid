@@ -332,7 +332,14 @@ Default shortcut is `⌘⌃D` to start and stop. `Escape` discards a recording
 without transcribing, and is only registered while recording. Recording stops
 automatically after 300 s; anything under 0.3 s is ignored.
 
-Until the microphone produces sound the overlay reads GETTING READY: a
+The overlay comes in three styles, chosen under Settings > General > Recording
+indicator, where Preview shows each without dictating. Classic, the default,
+draws the waveform over soft shade in the middle of the screen. Glass card
+shows the same on a small glass panel there, and Glass pill sits below the menu
+bar, growing into a card only to show a warning. The glass styles use Liquid
+Glass on macOS 26 and later and a frosted material on earlier versions.
+
+Until the microphone produces sound the overlay says it is getting ready: a
 Bluetooth headset sends bit-exact silence while it switches into its headset
 profile, which took AirPods Max up to 0.8 s. If a device sends nothing but
 silence for 2 s, the overlay says so, and the recording carries on, switching

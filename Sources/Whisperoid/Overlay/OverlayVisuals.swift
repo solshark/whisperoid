@@ -25,6 +25,11 @@ extension Color {
     static let auroraCore = Color(red: 0.62, green: 0.55, blue: 1.00)
     static let auroraEdge = Color(red: 0.35, green: 0.30, blue: 0.86)
     static let auroraAccent = Color(red: 0.45, green: 0.85, blue: 1.00)
+
+    // Deeper versions for light glass, on which the originals wash out.
+    static let auroraCoreDeep = Color(red: 0.40, green: 0.30, blue: 0.90)
+    static let auroraEdgeDeep = Color(red: 0.28, green: 0.22, blue: 0.72)
+    static let auroraAccentDeep = Color(red: 0.05, green: 0.52, blue: 0.82)
 }
 
 /// Layered sine ribbons whose amplitude follows the voice.
@@ -44,6 +49,11 @@ struct WavesVisual: View {
     let levels: [Float]
     var mode: Mode = .listening
 
+    /// Multiplies the ribbons' line width, so they stay fine when drawn small.
+    var lineScale: CGFloat = 1
+
+    @Environment(\.colorScheme) private var colorScheme
+
     private static let layers = 4
 
     /// Near-flat at rest so silence is unmistakable, and a large multiplier so
@@ -60,6 +70,11 @@ struct WavesVisual: View {
     private static let sweepRate = 0.42
 
     var body: some View {
+        let light = colorScheme == .light
+        let core = light ? Color.auroraCoreDeep : .auroraCore
+        let edge = light ? Color.auroraEdgeDeep : .auroraEdge
+        let accent = light ? Color.auroraAccentDeep : .auroraAccent
+
         TimelineView(.animation) { context in
             let now = context.date
             let time = now.timeIntervalSinceReferenceDate
@@ -133,15 +148,15 @@ struct WavesVisual: View {
                         path,
                         with: .linearGradient(
                             Gradient(colors: [
-                                Color.auroraEdge.opacity(0),
-                                Color.auroraAccent.opacity(opacity),
-                                Color.auroraCore.opacity(opacity),
-                                Color.auroraEdge.opacity(0),
+                                edge.opacity(0),
+                                accent.opacity(opacity),
+                                core.opacity(opacity),
+                                edge.opacity(0),
                             ]),
                             startPoint: .zero,
                             endPoint: CGPoint(x: size.width, y: 0)
                         ),
-                        style: StrokeStyle(lineWidth: 2.6 - ratio, lineCap: .round)
+                        style: StrokeStyle(lineWidth: (2.6 - ratio) * lineScale, lineCap: .round)
                     )
                 }
             }
