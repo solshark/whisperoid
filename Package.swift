@@ -29,9 +29,17 @@ let package = Package(
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ]
         ),
+        // Weak references to Swift runtime functions the compiler links
+        // strongly although they are newer than the minimum macOS. The linker
+        // flag makes those references win, so the app still launches on
+        // macOS 14 to 26; see Sources/WeakRuntimeImports.
+        .target(name: "WeakRuntimeImports"),
         .executableTarget(
             name: "Whisperoid",
-            dependencies: ["WhisperoidCore"]
+            dependencies: ["WhisperoidCore", "WeakRuntimeImports"],
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-weak_reference_mismatches", "-Xlinker", "weak"])
+            ]
         ),
         // Development tool: replays a recording through the real
         // SilenceDetector to tune auto-stop against actual speech.

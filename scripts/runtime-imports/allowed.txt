@@ -1,0 +1,149 @@
+# Swift runtime functions the app may import strongly.
+#
+# scripts/check-runtime-imports.sh fails the release when the app binary
+# imports a Swift runtime function (a C symbol starting with _swift_, from
+# /usr/lib/swift/libswift*.dylib) strongly and it is not listed here. A strong
+# import of a function the user's macOS lacks stops dyld from loading the app at
+# all, as _swift_initBorrow did below macOS 27 (WH-16).
+#
+# Every function listed must exist in the Swift runtime of the minimum macOS
+# declared in Package.swift and Resources/Info.plist (14.0, Swift 5.9). The
+# initial list is the strong imports of 0.9.0 (build 47) without
+# _swift_initBorrow, plus _swift_copyPOD (a value-witness helper since Swift
+# 5.0, imported by the WH-16 reproducer); the "2" variants (conformsToProtocol2,
+# getTypeByMangledNameInContext2 and InMetadataState2) arrived with Swift 5.9.
+#
+# Before adding a function, confirm that the runtime of the minimum macOS
+# exports it, for example by running on a Mac with that macOS:
+#   dyld_info -exports /usr/lib/swift/libswiftCore.dylib | grep <symbol>
+# If it does not, weak-link it in Sources/WeakRuntimeImports instead.
+
+_swift_allocBox
+_swift_allocError
+_swift_allocObject
+_swift_allocateGenericClassMetadata
+_swift_allocateGenericValueMetadata
+_swift_arrayDestroy
+_swift_arrayInitWithCopy
+_swift_arrayInitWithTakeBackToFront
+_swift_arrayInitWithTakeFrontToBack
+_swift_asyncLet_begin
+_swift_asyncLet_finish
+_swift_asyncLet_get_throwing
+_swift_beginAccess
+_swift_bridgeObjectRelease
+_swift_bridgeObjectRelease_n
+_swift_bridgeObjectRetain
+_swift_bridgeObjectRetain_n
+_swift_checkMetadataState
+_swift_conformsToProtocol2
+_swift_continuation_await
+_swift_continuation_init
+_swift_copyPOD
+_swift_deallocBox
+_swift_deallocClassInstance
+_swift_deallocObject
+_swift_deallocPartialClassInstance
+_swift_deallocUninitializedObject
+_swift_defaultActor_deallocate
+_swift_defaultActor_destroy
+_swift_defaultActor_initialize
+_swift_deletedAsyncMethodErrorTu
+_swift_deletedMethodError
+_swift_dynamicCast
+_swift_dynamicCastClass
+_swift_dynamicCastClassUnconditional
+_swift_dynamicCastMetatype
+_swift_dynamicCastObjCClass
+_swift_endAccess
+_swift_errorRelease
+_swift_errorRetain
+_swift_getAssociatedConformanceWitness
+_swift_getAssociatedTypeWitness
+_swift_getAtKeyPath
+_swift_getDynamicType
+_swift_getEnumCaseMultiPayload
+_swift_getEnumTagSinglePayloadGeneric
+_swift_getErrorValue
+_swift_getExistentialTypeMetadata
+_swift_getForeignTypeMetadata
+_swift_getFunctionTypeMetadata
+_swift_getFunctionTypeMetadata1
+_swift_getGenericMetadata
+_swift_getKeyPath
+_swift_getMetatypeMetadata
+_swift_getObjCClassFromMetadata
+_swift_getObjCClassMetadata
+_swift_getObjectType
+_swift_getOpaqueTypeConformance2
+_swift_getSingletonMetadata
+_swift_getTupleTypeLayout2
+_swift_getTupleTypeLayout3
+_swift_getTupleTypeMetadata2
+_swift_getTupleTypeMetadata3
+_swift_getTypeByMangledNameInContext
+_swift_getTypeByMangledNameInContext2
+_swift_getTypeByMangledNameInContextInMetadataState
+_swift_getTypeByMangledNameInContextInMetadataState2
+_swift_getWitnessTable
+_swift_initClassMetadata2
+_swift_initEnumMetadataMultiPayload
+_swift_initEnumMetadataSingleCase
+_swift_initEnumMetadataSinglePayload
+_swift_initStackObject
+_swift_initStaticObject
+_swift_initStructMetadata
+_swift_isClassType
+_swift_isEscapingClosureAtFileLocation
+_swift_isUniquelyReferenced_native
+_swift_isUniquelyReferenced_nonNull
+_swift_isUniquelyReferenced_nonNull_bridgeObject
+_swift_isUniquelyReferenced_nonNull_native
+_swift_isaMask
+_swift_lookUpClassMethod
+_swift_makeBoxUnique
+_swift_once
+_swift_projectBox
+_swift_release
+_swift_release_n
+_swift_retain
+_swift_retain_n
+_swift_setDeallocating
+_swift_slowAlloc
+_swift_slowDealloc
+_swift_stdlib_random
+_swift_storeEnumTagMultiPayload
+_swift_storeEnumTagSinglePayloadGeneric
+_swift_taskGroup_destroy
+_swift_taskGroup_initialize
+_swift_taskGroup_wait_next_throwing
+_swift_task_addCancellationHandler
+_swift_task_alloc
+_swift_task_create
+_swift_task_dealloc
+_swift_task_future_wait_throwing
+_swift_task_isCurrentExecutor
+_swift_task_localValueGet
+_swift_task_localValuePop
+_swift_task_localValuePush
+_swift_task_removeCancellationHandler
+_swift_task_reportUnexpectedExecutor
+_swift_task_switch
+_swift_unexpectedError
+_swift_unknownObjectRelease
+_swift_unknownObjectRelease_n
+_swift_unknownObjectRetain
+_swift_unknownObjectRetain_n
+_swift_unknownObjectWeakAssign
+_swift_unknownObjectWeakDestroy
+_swift_unknownObjectWeakInit
+_swift_unknownObjectWeakLoadStrong
+_swift_unownedRelease
+_swift_unownedRetain
+_swift_unownedRetainStrong
+_swift_updateClassMetadata2
+_swift_weakAssign
+_swift_weakDestroy
+_swift_weakInit
+_swift_weakLoadStrong
+_swift_willThrow

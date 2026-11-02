@@ -45,9 +45,18 @@ else
 	echo "==> running tests"
 	swift test --package-path "$ROOT"
 	echo
+	echo "==> testing the runtime imports gate"
+	"$ROOT/scripts/test-runtime-imports.sh"
+	echo
 fi
 
 "$ROOT/scripts/build-app.sh"
+
+# Not skippable: a binary that strongly imports a Swift runtime function the
+# minimum macOS lacks does not launch there at all, and nothing on this Mac
+# shows it (WH-16).
+echo "==> checking Swift runtime imports against the minimum macOS"
+"$ROOT/scripts/check-runtime-imports.sh" "$APP/Contents/MacOS/Whisperoid"
 
 VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")"
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist")"
