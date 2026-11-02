@@ -58,6 +58,11 @@ fi
 echo "==> checking Swift runtime imports against the minimum macOS"
 "$ROOT/scripts/check-runtime-imports.sh" "$APP/Contents/MacOS/Whisperoid"
 
+# Also not skippable: profiling data or the wrong recorded SDK does not break
+# the build or the tests, only what users get.
+echo "==> checking the release binary's build settings"
+"$ROOT/scripts/check-release-binary.sh" "$APP"
+
 VERSION="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")"
 BUNDLE_ID="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist")"
 DMG="$DIST/Whisperoid-$VERSION.dmg"

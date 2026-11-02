@@ -66,13 +66,31 @@ if [[ "${WHISPEROID_KEEP_RECORDINGS:-}" == "1" ]]; then
 	echo "warning: building the debugging variant that keeps every recording on disk" >&2
 fi
 
-xcodebuild build \
+# Two settings Xcode gets wrong for a package built this way; both are checked
+# in the release binary by scripts/check-release-binary.sh.
+#
+# CLANG_COVERAGE_MAPPING=NO: the scheme Xcode generates for a package has code
+# coverage on, and xcodebuild applies it to a plain build too. Every target is
+# then compiled with profiling counters and the app links the profiling
+# runtime, about 9 MB of a 34 MB binary. A setting on the command line outranks
+# the one Xcode synthesises; -enableCodeCoverage is accepted only by `test`.
+#
+# SDKROOT: the Swift driver hands the link to clang with the SDK as --sysroot,
+# from which clang cannot read the SDK version. Without SDKROOT in the
+# environment it records the deployment target instead (sdk 14.0), and macOS
+# then runs the app with the behaviour of the macOS 14 SDK. Xcode does not treat
+# an environment variable as a build input, so an incremental build would keep a
+# link made without it; removing the binary first makes every build link it
+# again, which takes seconds.
+rm -f "$DERIVED/Build/Products/$XCCONFIG/Whisperoid"
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)" xcodebuild build \
 	-scheme Whisperoid \
 	-destination 'platform=macOS' \
 	-derivedDataPath "$DERIVED" \
 	-configuration "$XCCONFIG" \
 	-skipPackagePluginValidation \
 	-skipMacroValidation \
+	CLANG_COVERAGE_MAPPING=NO \
 	${CONDITIONS[@]+"${CONDITIONS[@]}"} \
 	>/dev/null
 
