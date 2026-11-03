@@ -7,7 +7,8 @@
 // weak-linked, but the runtime function itself is linked strongly, so dyld
 // refuses to load the app on any macOS before 27 with "Symbol not found:
 // _swift_initBorrow" (WH-16). scripts/runtime-imports/BorrowReproducer.swift
-// reproduces it without any package.
+// reproduces it without any package. Reported upstream as
+// https://github.com/swiftlang/swift/issues/93916.
 //
 // A weak reference here, combined with the linker flag
 // -weak_reference_mismatches weak on the app target, makes the final binary
