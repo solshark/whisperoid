@@ -8,7 +8,7 @@ struct AboutView: View {
     var onShowAcknowledgements: (@MainActor () -> Void)?
 
     private static let author = "Michael Shvets"
-    private static let email = "ms@solshark.me"
+    private static let email = "support@blackmeridian.online"
 
     var body: some View {
         VStack(spacing: 12) {
