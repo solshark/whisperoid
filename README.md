@@ -22,12 +22,24 @@ remember.
 - Permission to use the microphone, requested from the setup window or the first
   time you record. The app asks for nothing else.
 
+## Download
+
+Whisperoid is free. Download the latest disk image from
+[Releases](https://github.com/solshark/whisperoid/releases/latest), open it, and
+drag Whisperoid to Applications. The app is signed with Black Meridian's
+Developer ID and notarised by Apple, so it opens without a security warning.
+Each release lists the SHA-256 checksum of its disk image.
+
+On first launch Whisperoid asks before downloading its speech model, about
+1.6 GB, from Hugging Face. After that it works without a network connection.
+
+Problems and suggestions are welcome as
+[issues](https://github.com/solshark/whisperoid/issues).
+
 ## Getting started
 
-No prebuilt builds of Whisperoid are published on GitHub, and none are
-planned. The ready-to-use app is coming to the Mac App Store. Building from
-source gives the full app, free, under the [MIT licence](#licence). This needs
-Xcode installed, along with its Metal toolchain:
+To build Whisperoid from source instead, under the [MIT licence](#licence),
+Xcode is needed, along with its Metal toolchain:
 
 ```sh
 xcodebuild -downloadComponent MetalToolchain
@@ -403,8 +415,8 @@ lives. Move it to /Applications before enabling.
 
 ## Privacy
 
-Audio never reaches disk. The only filesystem write the app performs is
-creating its support directory for the model cache.
+Audio never reaches disk. Apart from its settings, the app writes only to its
+support directory, and only the models it downloads.
 
 - Captured samples are held in memory and cleared by `stop()` and `cancel()`.
 - Samples are handed to WhisperKit as an array, not a file path. WhisperKit's
@@ -414,7 +426,24 @@ creating its support directory for the model cache.
   discarded when the app quits. It is not written to `UserDefaults` or disk.
 - Nothing transcribed is logged. Log entries carry the model name, storage
   path, timings, window geometry, audio levels and character counts: numbers
-  describing a recording, never its words.
+  describing a recording, never its words. The one exception is the setting
+  "Record before and after in the system log", off by default, which logs the
+  text before and after cleanup while it is on.
+
+The app makes network requests to Hugging Face only, and never sends audio,
+transcripts or settings:
+
+- One request to `huggingface.co/api` for the size of the speech model, shown
+  before the download is approved. Made only while the model is not on disk.
+- The speech model download (`argmaxinc/whisperkit-coreml`, about 1.6 GB), once
+  approved. Skipped entirely when a complete copy is on disk.
+- The language model for transcript cleanup (`mlx-community/gemma-4-e2b-it-4bit`,
+  about 3.5 GB), only if that cleanup mode is chosen in Settings, and only until
+  a complete copy is on disk.
+- Two `HEAD` requests to `huggingface.co` and `cdn-lfs.hf.co`, only when a
+  diagnostics report is requested with `WHISPEROID_DUMP_DIAGNOSTICS`.
+
+There is no update check, analytics or crash reporting.
 
 The transcript is placed on the clipboard by design. A clipboard manager will
 therefore archive it to disk, outside this app's control, which is worth
@@ -532,7 +561,8 @@ bundle ID, with a secure timestamp.
 
 Black Meridian makes its own disk images with `bundle exec fastlane release_dmg`,
 which signs with the studio's Developer ID, notarises, staples, and checks the
-result with Gatekeeper. These images are not published. The lane relies on the
+result with Gatekeeper. These images are the ones attached to the
+[GitHub releases](https://github.com/solshark/whisperoid/releases). The lane relies on the
 studio's private signing lanes and certificates, so it works only on the
 studio's machines.
 
